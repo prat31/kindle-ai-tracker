@@ -224,30 +224,98 @@ func connectorPages(base render.View, now time.Time, loc *time.Location) []rende
 	return views
 }
 
-// writeGIF scales each landscape frame down by half and loops through them.
+// writeGIF scales each landscape frame down by half, sets it in a drawing of a
+// Paperwhite lying on its side (USB-C edge on the right, so the wider bezel is there)
+// and loops through them. Outside the Kindle is transparent.
 func writeGIF(path string, frames []*image.Gray, delay int) error {
-	pal := make(color.Palette, 16)
-	for i := range pal {
+	pal := make(color.Palette, 17)
+	for i := 0; i < 16; i++ {
 		pal[i] = color.Gray{Y: uint8(i * 17)}
 	}
+	const clear = 16
+	pal[clear] = color.Transparent
 	anim := &gif.GIF{}
+
+	const (
+		bezel   = 38 // left, top and bottom
+		chin    = 88 // the wider bezel on the USB side
+		radius  = 46 // corners of the body
+		bodyIdx = 2  // near-black body
+		edgeIdx = 4  // slightly lighter rim around the screen
+		portIdx = 0  // USB-C port
+		portLen = 44 // port length along the edge
+		portW   = 6
+	)
 	for _, f := range frames {
-		w, h := f.Rect.Dx()/2, f.Rect.Dy()/2
+		sw, sh := f.Rect.Dx()/2, f.Rect.Dy()/2
+		w, h := sw+bezel+chin, sh+2*bezel
 		img := image.NewPaletted(image.Rect(0, 0, w, h), pal)
 		for y := 0; y < h; y++ {
 			for x := 0; x < w; x++ {
+				img.Pix[y*img.Stride+x] = bodyIdx
+				if outsideRounded(x, y, w, h, radius) {
+					img.Pix[y*img.Stride+x] = clear
+				}
+			}
+		}
+		// a thin rim where the screen sits in the bezel
+		for y := bezel - 3; y < bezel+sh+3; y++ {
+			for x := bezel - 3; x < bezel+sw+3; x++ {
+				img.Pix[y*img.Stride+x] = edgeIdx
+			}
+		}
+		for y := 0; y < sh; y++ {
+			for x := 0; x < sw; x++ {
 				sum := int(f.Pix[2*y*f.Stride+2*x]) + int(f.Pix[2*y*f.Stride+2*x+1]) +
 					int(f.Pix[(2*y+1)*f.Stride+2*x]) + int(f.Pix[(2*y+1)*f.Stride+2*x+1])
-				img.Pix[y*img.Stride+x] = uint8((sum/4 + 8) / 17)
+				img.Pix[(y+bezel)*img.Stride+x+bezel] = uint8((sum/4 + 8) / 17)
+			}
+		}
+		// "kindle" along the wide bezel, reading bottom to top since the device lies on its side
+		logo := render.NewCanvas(200, 50)
+		logo.Rect(0, 0, 200, 50, 0x22)
+		logo.Text("kindle", render.Face(render.Medium, 34), 100, 36, render.Center, 0x99)
+		rot := device.Rotate(logo.Img, "usb-left")
+		ox, oy := bezel+sw+(chin-rot.Rect.Dx())/2, (h-rot.Rect.Dy())/2
+		for y := 0; y < rot.Rect.Dy(); y++ {
+			for x := 0; x < rot.Rect.Dx(); x++ {
+				img.Pix[(oy+y)*img.Stride+ox+x] = uint8((int(rot.Pix[y*rot.Stride+x]) + 8) / 17)
+			}
+		}
+		// USB-C port on the right edge
+		for y := h/2 - portLen/2; y < h/2+portLen/2; y++ {
+			for x := w - portW; x < w-1; x++ {
+				img.Pix[y*img.Stride+x] = portIdx
 			}
 		}
 		anim.Image = append(anim.Image, img)
 		anim.Delay = append(anim.Delay, delay)
+		anim.Disposal = append(anim.Disposal, gif.DisposalBackground)
 	}
+	anim.BackgroundIndex = clear
 	out, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 	return gif.EncodeAll(out, anim)
+}
+
+// outsideRounded reports whether (x, y) falls outside a w×h rectangle with corners of radius r.
+func outsideRounded(x, y, w, h, r int) bool {
+	cx, cy := -1, -1
+	switch {
+	case x < r && y < r:
+		cx, cy = r, r
+	case x >= w-r && y < r:
+		cx, cy = w-r-1, r
+	case x < r && y >= h-r:
+		cx, cy = r, h-r-1
+	case x >= w-r && y >= h-r:
+		cx, cy = w-r-1, h-r-1
+	default:
+		return false
+	}
+	dx, dy := x-cx, y-cy
+	return dx*dx+dy*dy > r*r
 }
