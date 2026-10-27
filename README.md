@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.svg" alt="kindle-ai-tracker" width="96"></p>
+
 # kindle-ai-tracker
 
 Turn a jailbroken Kindle into a desk display for your AI plan usage.
