@@ -16,18 +16,24 @@ See your usage, limits and resets at a glance. Updates every 5 minutes.
 
 ## Requirements
 
-- A Kindle jailbroken with the KindleModding hotfix (scriptlets) and FBInk. Built and tested on a Paperwhite 5, firmware 5.19.2.
-- Go, to build.
+A Kindle jailbroken with the KindleModding hotfix (scriptlets) and FBInk. Built and tested on a Paperwhite 5, firmware 5.19.2.
 
 ## Install
 
-Plug in the Kindle, then run:
+**With KPM**, on the Kindle (for example in kTerm):
 
 ```bash
-make install
+kpm add-repo https://me.pratcode.dev/kindle-ai-tracker/manifest.json
+kpm install ai_dashboard
 ```
 
-Eject it and keep it on a wall charger. When the Kindle is connected to a computer, it switches to USB drive mode and the dashboard can't run.
+KPM handles updates (`kpm upgrade`) and removal (`kpm uninstall ai_dashboard`).
+
+**By hand:** download `kindle-ai-dashboard-<version>.zip` from [Releases](https://github.com/prat31/kindle-ai-tracker/releases), and unzip it onto the Kindle drive.
+
+**From source** (needs Go): plug in the Kindle and run `make install`.
+
+The dashboard opens from your library (**AI Dashboard**) or from KUAL. Run it on a wall charger, because a Kindle connected to a computer switches to USB drive mode.
 
 ## Usage
 
@@ -62,7 +68,7 @@ Optional settings live in `ai-dashboard/config.json` on the Kindle:
 |---|---|
 | `refresh_minutes` | How often to fetch. |
 | `pause_after` | Pause after this many fetches in a row with no change (`0` = never). |
-| `timezone` | Time zone for clock times. `make install` sets it to your Mac's. |
+| `timezone` | Time zone for clock times, e.g. `Europe/London` (`make install` sets it to your Mac's). |
 | `full_refresh_every` | Flash the screen every N updates to clear e-ink ghosting (default `6`). |
 | `providers` | Per-service options, such as an OpenRouter budget or `"region": "cn"` for Z.ai. |
 
@@ -81,6 +87,9 @@ To add one:
 ```bash
 make test      # unit tests
 make preview   # render every screen with sample data into build/preview/
+make dist      # release zip and KPM repository into build/
 ```
+
+To release, bump `VERSION` and push a matching tag (`v0.1.0`). GitHub Actions publishes the zip, the `.kpkg` and the KPM repository.
 
 Logs are written to `ai-dashboard/dash.log` on the Kindle.

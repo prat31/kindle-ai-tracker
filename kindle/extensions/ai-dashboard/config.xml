@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<extension>
+	<information>
+		<name>AI Dashboard</name>
+		<version>VERSION</version>
+		<author>prat31</author>
+		<id>ai-dashboard</id>
+	</information>
+	<menus>
+		<menu type="json" dynamic="false">menu.json</menu>
+	</menus>
+</extension>

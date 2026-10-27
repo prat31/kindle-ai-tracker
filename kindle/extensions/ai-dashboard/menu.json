@@ -1,0 +1,18 @@
+{
+  "items": [
+    {
+      "name": "AI Dashboard",
+      "priority": 0,
+      "items": [
+        {
+          "name": "Start dashboard",
+          "priority": 1,
+          "action": "/bin/sh",
+          "params": "/mnt/us/extensions/ai-dashboard/run.sh",
+          "status": false,
+          "exitmenu": true
+        }
+      ]
+    }
+  ]
+}

@@ -3,8 +3,5 @@
   "refresh_minutes": 5,
   "pause_after": 6,
   "full_refresh_every": 6,
-  "timezone": "Asia/Kolkata",
-  "providers": [
-    { "id": "claude", "plan_label": "Pro" }
-  ]
+  "timezone": ""
 }

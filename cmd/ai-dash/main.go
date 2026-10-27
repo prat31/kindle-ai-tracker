@@ -33,6 +33,9 @@ import (
 	"github.com/prat31/kindle-ai-tracker/internal/render"
 )
 
+// version is set at build time from the VERSION file.
+var version = "dev"
+
 // source is one supported provider and what we know about it.
 type source struct {
 	p    provider.Provider
@@ -68,6 +71,8 @@ func main() {
 		err = preview(cfg, *out)
 	case "providers":
 		fmt.Println(strings.Join(provider.IDs(), "\n"))
+	case "version":
+		fmt.Println(version)
 	case "", "run", "once", "login-cli":
 		var a *App
 		if a, err = newApp(cfg, *dir); err == nil {
@@ -81,7 +86,7 @@ func main() {
 			}
 		}
 	default:
-		err = fmt.Errorf("unknown command %q (run, once, login-cli <provider>, preview, providers)", cmd)
+		err = fmt.Errorf("unknown command %q (run, once, login-cli <provider>, preview, providers, version)", cmd)
 	}
 	if err != nil {
 		log.Printf("error: %v", err)
@@ -191,6 +196,7 @@ func (a *App) showPage(full bool) {
 }
 
 func (a *App) run() error {
+	log.Printf("ai-dash %s starting", version)
 	a.touch = device.WatchTouch(a.cfg.Calibration, render.H, render.W) // portrait panel
 	a.display.Show(render.Message(a.view(nil), "Starting AI dashboard…",
 		"Hold a finger on the screen for 3 seconds to open the menu.").Img, true)

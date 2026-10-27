@@ -1,5 +1,9 @@
 #!/bin/sh
-# Runs on the Kindle (launched by documents/ai_dashboard.sh).
+# Runs on the Kindle, started by the library scriptlet, the KUAL menu or `kpm launch`.
+#
+# The program lives next to this script: /mnt/us/ai-dashboard for a manual install, or
+# KPM's package folder. Settings, logins and history always live in /mnt/us/ai-dashboard
+# so they survive KPM upgrades.
 #
 # The Kindle UI keeps running underneath the dashboard; we only freeze it, the way
 # KOReader does by default on current firmware:
@@ -9,7 +13,9 @@
 # Exiting undoes all of that in a second or two. Fully stopping lab126_gui and starting it
 # again (what this script used to do) can leave FW 5.19 on a blank white screen.
 
+CODE_DIR=$(cd "$(dirname "$0")" && pwd)
 DIR=/mnt/us/ai-dashboard
+mkdir -p "$DIR"
 LOG="$DIR/dash.log"
 PIDFILE=/tmp/ai-dash.pid
 FBDUMP=/var/tmp/ai-dash-fb.dump
@@ -25,6 +31,11 @@ if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
     exit 0
 fi
 echo $$ >"$PIDFILE"
+echo "running from $CODE_DIR"
+
+if [ ! -f "$DIR/config.json" ] && [ -f "$CODE_DIR/config.example.json" ]; then
+    cp "$CODE_DIR/config.example.json" "$DIR/config.json"
+fi
 
 # Let the library finish closing the scriptlet before we freeze the UI.
 sleep 1
@@ -43,7 +54,7 @@ killall -STOP awesome
 cd "$DIR" || exit 1
 crashes=0
 while :; do
-    ./ai-dash -dir "$DIR" run
+    "$CODE_DIR/ai-dash" -dir "$DIR" run
     rc=$?
     echo "ai-dash exited rc=$rc at $(date)"
     [ "$rc" -eq 0 ] && break
