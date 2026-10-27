@@ -1,0 +1,70 @@
+#!/bin/sh
+# Runs on the Kindle (launched by documents/ai_dashboard.sh).
+#
+# The Kindle UI keeps running underneath the dashboard; we only freeze it, the way
+# KOReader does by default on current firmware:
+#   - pillow (status bar & overlays) disabled, the statusbar job stopped
+#   - the window manager (awesome) SIGSTOPped so nothing gets redrawn over us
+#   - ai-dash grabs the touchscreen so taps don't reach the library underneath
+# Exiting undoes all of that in a second or two. Fully stopping lab126_gui and starting it
+# again (what this script used to do) can leave FW 5.19 on a blank white screen.
+
+DIR=/mnt/us/ai-dashboard
+LOG="$DIR/dash.log"
+PIDFILE=/tmp/ai-dash.pid
+FBDUMP=/var/tmp/ai-dash-fb.dump
+
+if [ -f "$LOG" ] && [ "$(wc -c <"$LOG")" -gt 1000000 ]; then
+    mv "$LOG" "$LOG.old"
+fi
+exec >>"$LOG" 2>&1
+echo "=== start $(date)"
+
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    echo "already running"
+    exit 0
+fi
+echo $$ >"$PIDFILE"
+
+# Let the library finish closing the scriptlet before we freeze the UI.
+sleep 1
+
+lipc-set-prop com.lab126.powerd preventScreenSaver 1
+lipc-set-prop com.lab126.cmd wirelessEnable 1
+
+cat /dev/fb0 >"$FBDUMP" 2>/dev/null
+lipc-set-prop com.lab126.pillow disableEnablePillow disable
+STATUSBAR_STOPPED=no
+if [ -f /etc/upstart/statusbar.conf ] && stop statusbar; then
+    STATUSBAR_STOPPED=yes
+fi
+killall -STOP awesome
+
+cd "$DIR" || exit 1
+crashes=0
+while :; do
+    ./ai-dash -dir "$DIR" run
+    rc=$?
+    echo "ai-dash exited rc=$rc at $(date)"
+    [ "$rc" -eq 0 ] && break
+    crashes=$((crashes + 1))
+    if [ "$crashes" -ge 5 ]; then
+        /mnt/us/libkh/bin/fbink -q -c -f -m -y 20 "AI dashboard keeps crashing - see ai-dashboard/dash.log"
+        sleep 10
+        break
+    fi
+    sleep 10
+done
+
+echo "restoring the Kindle UI"
+killall -CONT awesome
+[ "$STATUSBAR_STOPPED" = yes ] && start statusbar
+if [ -f "$FBDUMP" ]; then
+    cat "$FBDUMP" >/dev/fb0
+    rm -f "$FBDUMP"
+fi
+lipc-set-prop com.lab126.pillow disableEnablePillow enable
+lipc-set-prop com.lab126.appmgrd start app://com.lab126.booklet.home
+lipc-set-prop com.lab126.powerd preventScreenSaver 0
+rm -f "$PIDFILE"
+echo "=== stopped $(date)"
