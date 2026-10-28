@@ -24,10 +24,16 @@ kual() {
     sed "s|<version>VERSION</version>|<version>$VERSION</version>|" kindle/extensions/ai-dashboard/config.xml >"$1/config.xml"
 }
 
+# The library shows the scriptlet with the cover from its "# Icon:" line. It's inlined
+# as a data URI, since the scriptlet can't know where the app was installed.
+SCRIPTLET=build/ai_dashboard.sh
+sed "s|^# Icon:.*|# Icon: data:image/png;base64,$(base64 <kindle/cover.png | tr -d '\n')|" \
+    kindle/documents/ai_dashboard.sh >"$SCRIPTLET"
+
 # --- release zip: mirrors the Kindle drive ----------------------------------
 rm -rf build/dist && mkdir -p build/dist/root/ai-dashboard build/dist/root/documents
 cp "$BIN" kindle/ai-dashboard/start.sh kindle/ai-dashboard/config.example.json build/dist/root/ai-dashboard/
-cp kindle/documents/ai_dashboard.sh build/dist/root/documents/
+cp "$SCRIPTLET" build/dist/root/documents/
 kual build/dist/root/extensions/ai-dashboard
 ZIP="build/dist/kindle-ai-dashboard-$VERSION.zip"
 (cd build/dist/root && zip -qr -X "../$(basename "$ZIP")" .)
@@ -37,7 +43,7 @@ echo "wrote $ZIP"
 PKG=build/kpm-pkg
 rm -rf "$PKG" && mkdir -p "$PKG/scriptlets"
 cp "$BIN" kindle/ai-dashboard/start.sh kindle/ai-dashboard/config.example.json kpm/install.sh kpm/uninstall.sh kpm/launch.sh "$PKG/"
-cp kindle/documents/ai_dashboard.sh "$PKG/scriptlets/"
+cp "$SCRIPTLET" "$PKG/scriptlets/"
 kual "$PKG/kual/ai-dashboard"
 cat >"$PKG/manifest.json" <<JSON
 {

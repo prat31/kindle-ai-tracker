@@ -22,9 +22,7 @@ LOG="$DIR/dash.log"
 PIDFILE=/tmp/ai-dash.pid
 FBDUMP=/var/tmp/ai-dash-fb.dump
 
-if [ -f "$LOG" ] && [ "$(wc -c <"$LOG")" -gt 1000000 ]; then
-    mv "$LOG" "$LOG.old"
-fi
+rm -f "$LOG.old" # ai-dash keeps the log to the last 24 hours; older versions rotated it
 exec >>"$LOG" 2>&1
 echo "=== start $(date)"
 

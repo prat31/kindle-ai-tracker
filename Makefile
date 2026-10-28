@@ -16,6 +16,7 @@ mac:
 preview: mac
 	./build/ai-dash-mac -dir build -out build/preview preview
 	cp build/preview/dashboards.gif docs/dashboards.gif
+	cp build/preview/cover.png kindle/cover.png
 
 test:
 	go vet ./... && go test ./...

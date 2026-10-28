@@ -217,7 +217,14 @@ func (a *App) run() error {
 		"Hold a finger on the screen for 3 seconds to open the menu.").Img, true)
 	a.touched()
 	fetch := true
+	var pruned time.Time
 	for {
+		if time.Since(pruned) > time.Hour {
+			if err := pruneLog(filepath.Join(a.dir, "dash.log"), logKeep, time.Now()); err != nil && !os.IsNotExist(err) {
+				log.Printf("trimming the log: %v", err)
+			}
+			pruned = time.Now()
+		}
 		if fetch && len(a.connected) > 0 && !a.paused {
 			a.fetchAll()
 		}

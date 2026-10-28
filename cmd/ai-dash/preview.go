@@ -118,6 +118,9 @@ func preview(cfg Config, out string) error {
 		}
 		frames = append(frames, c.Img)
 	}
+	if err := device.WritePNG(filepath.Join(out, "cover.png"), render.Cover(300, 400)); err != nil {
+		return err
+	}
 	if err := writeGIF(filepath.Join(out, "dashboards.gif"), frames, 250); err != nil {
 		return err
 	}

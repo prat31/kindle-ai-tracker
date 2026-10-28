@@ -96,4 +96,4 @@ make dist      # release zip and KPM repository into build/
 
 To release, bump `VERSION` and push a matching tag (`v0.1.0`). GitHub Actions publishes the zip, the `.kpkg` and the KPM repository.
 
-Logs are written to `ai-dashboard/dash.log` on the Kindle.
+Logs from the last 24 hours are kept in `ai-dashboard/dash.log` on the Kindle.
