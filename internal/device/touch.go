@@ -26,14 +26,17 @@ type Gesture struct {
 }
 
 type Touch struct {
-	Tap  chan Gesture
-	Hold chan Point
+	Tap   chan Gesture
+	Hold  chan Point
+	Power chan struct{} // the power button was pressed
 }
 
 const holdTime = 2500 * time.Millisecond
 
 // NoTouch never fires; used off-device.
-func NoTouch() *Touch { return &Touch{Tap: make(chan Gesture), Hold: make(chan Point)} }
+func NoTouch() *Touch {
+	return &Touch{Tap: make(chan Gesture), Hold: make(chan Point), Power: make(chan struct{})}
+}
 
 type rawKind int
 
@@ -42,7 +45,8 @@ const (
 	rawUp
 	rawX // v is the position normalised to 0..1
 	rawY
-	rawSync // end of one batch of updates from the touchscreen
+	rawSync  // end of one batch of updates from the touchscreen
+	rawPower // power button pressed
 )
 
 type rawEvent struct {
@@ -55,7 +59,7 @@ type rawEvent struct {
 // 2.5 s fires Hold (once; releasing it afterwards fires nothing). panelW×panelH is the
 // portrait panel size. The Kindle UI is stopped while we run, so nothing else reacts.
 func WatchTouch(cal Calibration, panelW, panelH int) *Touch {
-	t := &Touch{Tap: make(chan Gesture, 1), Hold: make(chan Point, 1)}
+	t := &Touch{Tap: make(chan Gesture, 1), Hold: make(chan Point, 1), Power: make(chan struct{}, 1)}
 	paths, _ := filepath.Glob("/dev/input/event*")
 	events := make(chan rawEvent, 64)
 	for _, p := range paths {
@@ -96,6 +100,12 @@ func WatchTouch(cal Calibration, panelW, panelH int) *Touch {
 					if !down {
 						down, haveStart, downAt = true, false, time.Now()
 						timer.Reset(holdTime)
+					}
+				case rawPower:
+					log.Printf("power button")
+					select {
+					case t.Power <- struct{}{}:
+					default:
 					}
 				case rawSync:
 					// The position of a new touch arrives in the same batch as the touch itself.
@@ -145,6 +155,7 @@ const (
 	absMTX     = 0x35
 	absMTY     = 0x36
 	absTrackID = 0x39
+	keyPower   = 116
 )
 
 func readInput(path string, events chan<- rawEvent) {
@@ -190,6 +201,8 @@ func readInput(path string, events chan<- rawEvent) {
 		switch {
 		case typ == 0 && code == 0: // EV_SYN / SYN_REPORT
 			events <- rawEvent{kind: rawSync}
+		case typ == evKey && code == keyPower && val == 1:
+			events <- rawEvent{kind: rawPower}
 		case typ == evKey && code == btnTouch:
 			events <- rawEvent{kind: downOrUp(val != 0)}
 		case typ == evAbs && code == absTrackID:

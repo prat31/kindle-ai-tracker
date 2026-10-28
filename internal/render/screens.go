@@ -34,6 +34,7 @@ type View struct {
 	Page       int // 0-based, when several providers take turns on screen
 	Pages      int
 	Paused     bool // auto-refresh stopped after a run of unchanged fetches
+	Sleeping   bool // the power button put the Kindle to sleep
 }
 
 func (v *View) Clock(t time.Time) string { return t.In(v.Loc).Format("15:04") }
@@ -85,6 +86,8 @@ func Dashboard(v *View) *Canvas {
 	}
 	hint := "Tap: refresh   ·   Hold 3 s: menu   ·   Bar marker = time elapsed"
 	switch {
+	case v.Sleeping:
+		hint = "Tap or press power: wake"
 	case v.Paused:
 		hint = "Tap: refresh and resume   ·   Hold 3 s: menu"
 	case v.Pages > 1:
@@ -137,6 +140,8 @@ func drawHeader(c *Canvas, v *View) {
 		c.Text(label, f, right-20, 90, Right, cWhite)
 	}
 	switch {
+	case v.Sleeping:
+		chip("SLEEPING  ·  tap or press power to wake")
 	case v.Err != "":
 		last := "never"
 		if v.Snap != nil {
@@ -172,7 +177,9 @@ func drawFooter(c *Canvas, v *View, hint string) {
 	if v.Pages > 1 {
 		right = append(right, fmt.Sprintf("Page %d/%d", v.Page+1, v.Pages))
 	}
-	if v.Paused {
+	if v.Sleeping {
+		right = append(right, "Not updating while asleep")
+	} else if v.Paused {
 		right = append(right, "No changes lately: auto-refresh paused")
 	} else if !v.NextUpdate.IsZero() {
 		right = append(right, "Next update "+v.Clock(v.NextUpdate))

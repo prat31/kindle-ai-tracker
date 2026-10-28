@@ -56,6 +56,8 @@ type App struct {
 	next      time.Time // zero while paused
 	idle      int       // fetch rounds in a row that brought nothing new
 	paused    bool
+	sleeping  bool      // the power button put the Kindle to sleep
+	powerAt   time.Time // last sleep or wake, to ignore the echoes of one button press
 }
 
 func main() {
@@ -166,7 +168,7 @@ func (a *App) current() *source {
 
 func (a *App) view(src *source) *render.View {
 	v := &render.View{Now: time.Now(), Loc: a.cfg.loc, Provider: "AI Dashboard", NextUpdate: a.next,
-		Battery: device.BatteryLevel(), Page: a.page, Pages: len(a.connected), Paused: a.paused, Hist: &history.Store{}}
+		Battery: device.BatteryLevel(), Page: a.page, Pages: len(a.connected), Paused: a.paused, Sleeping: a.sleeping, Hist: &history.Store{}}
 	if src != nil {
 		v.Provider, v.Snap, v.Err, v.Hist = src.p.Name(), src.snap, src.err, src.hist
 	}
@@ -198,10 +200,11 @@ func (a *App) showPage(full bool) {
 func (a *App) run() error {
 	log.Printf("ai-dash %s starting", version)
 	a.touch = device.WatchTouch(a.cfg.Calibration, render.H, render.W) // portrait panel
+	powerd := device.WatchPowerd()
 	a.display.Show(render.Message(a.view(nil), "Starting AI dashboard…",
 		"Hold a finger on the screen for 3 seconds to open the menu.").Img, true)
 	for {
-		if len(a.connected) > 0 && !a.paused {
+		if len(a.connected) > 0 && !a.paused && !a.sleeping {
 			a.fetchAll()
 		}
 		a.showPage(false)
@@ -213,10 +216,31 @@ func (a *App) run() error {
 		for {
 			select {
 			case <-tick.C:
-				if len(a.connected) > 0 && !a.paused && !time.Now().Before(a.next) {
+				if len(a.connected) > 0 && !a.paused && !a.sleeping && !time.Now().Before(a.next) {
+					break wait
+				}
+			case <-a.touch.Power:
+				if time.Since(a.powerAt) < powerEcho {
+					continue
+				}
+				if a.sleeping {
+					a.wake()
+					break wait
+				}
+				a.sleep(powerd, true)
+			case ev := <-powerd:
+				switch {
+				case ev == device.GoingToSleep && !a.sleeping:
+					a.sleep(powerd, false)
+				case ev == device.WokeUp && a.sleeping:
+					a.wake()
 					break wait
 				}
 			case g := <-a.touch.Tap:
+				if a.sleeping {
+					a.wake()
+					break wait
+				}
 				switch a.gesture(g) {
 				case navPrev:
 					a.page--
@@ -229,6 +253,9 @@ func (a *App) run() error {
 					break wait // refresh now
 				}
 			case <-a.touch.Hold:
+				if a.sleeping {
+					a.wake()
+				}
 				switch a.mainMenu() {
 				case actExit:
 					tick.Stop()
@@ -241,6 +268,40 @@ func (a *App) run() error {
 			}
 		}
 		tick.Stop()
+	}
+}
+
+// powerEcho: one press of the power button can reach us twice (as a key press and as
+// powerd changing state), so a second signal this soon after the last one is ignored.
+const powerEcho = 3 * time.Second
+
+// sleep shows the dashboard marked as sleeping, stops fetching and lets the Kindle
+// suspend. powerd normally reacts to the button itself; if it hasn't within a couple of
+// seconds (fromKey), we ask it to.
+func (a *App) sleep(powerd <-chan device.PowerEvent, fromKey bool) {
+	log.Printf("going to sleep")
+	a.sleeping, a.powerAt = true, time.Now()
+	a.showPage(true)
+	device.PreventScreenSaver(false)
+	if !fromKey {
+		return
+	}
+	select {
+	case <-powerd:
+	case <-time.After(2 * time.Second):
+		device.PressPowerButton()
+	}
+}
+
+// wake keeps the Kindle awake again and waits for Wi-Fi before the next fetch.
+func (a *App) wake() {
+	log.Printf("waking up")
+	a.sleeping, a.powerAt = false, time.Now()
+	device.PreventScreenSaver(true)
+	a.resume()
+	for i := 0; i < 10 && device.WifiIP() == ""; i++ {
+		device.WakeWifi()
+		time.Sleep(2 * time.Second)
 	}
 }
 

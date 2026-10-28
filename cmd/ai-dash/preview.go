@@ -41,6 +41,9 @@ func preview(cfg Config, out string) error {
 	paused := *v
 	paused.Paused, paused.NextUpdate = true, time.Time{}
 
+	sleeping := *v
+	sleeping.Sleeping = true
+
 	// A window that ended with nothing used since (this used to show "-97%").
 	expired := *v
 	es := *snap
@@ -91,6 +94,7 @@ func preview(cfg Config, out string) error {
 		"dashboard":            render.Dashboard(v),
 		"dashboard-offline":    render.Dashboard(&offline),
 		"dashboard-paused":     render.Dashboard(&paused),
+		"dashboard-sleeping":   render.Dashboard(&sleeping),
 		"dashboard-expired":    render.Dashboard(&expired),
 		"dashboard-copilot":    render.Dashboard(&copilot),
 		"dashboard-openrouter": render.Dashboard(&openrouter),
