@@ -118,6 +118,22 @@ func preview(cfg Config, out string) error {
 		}
 		frames = append(frames, c.Img)
 	}
+	// Every connector with all its limits used up, where the big "100%" leaves the
+	// least room beside it.
+	for i, pv := range connectorPages(*v, now, cfg.loc) {
+		full := *pv.Snap
+		full.Meters = append([]provider.Meter{}, pv.Snap.Meters...)
+		for j := range full.Meters {
+			full.Meters[j].Used = 100
+		}
+		if pv.Provider == "OpenRouter" { // a key limit that never resets
+			full.Meters[0].ResetsAt, full.Meters[0].Window, full.Meters[0].Detail = time.Time{}, 0, "$10.00 of $10.00"
+		}
+		pv.Snap = &full
+		if err := save(fmt.Sprintf("connector-%d-full", i+1), render.Dashboard(&pv)); err != nil {
+			return err
+		}
+	}
 	if err := device.WritePNG(filepath.Join(out, "cover.png"), render.Cover(300, 400)); err != nil {
 		return err
 	}

@@ -265,19 +265,29 @@ func drawMeterPanel(c *Canvas, v *View, x, top, w int, m provider.Meter, extra s
 	if expired {
 		used = 0
 	}
-	c.Text(fmt.Sprintf("%.0f%%", used), Face(Bold, 170), x-6, top+205, Left, cBlack)
+	pw := c.Text(fmt.Sprintf("%.0f%%", used), Face(Bold, 170), x-6, top+205, Left, cBlack)
+	room := w - (pw - 6) - 30 // what's left to the right of the big number
 
 	switch {
 	case expired:
 		c.Text("window", Face(Regular, 32), x+w, top+90, Right, cDark)
-		c.Text("reset", Face(Bold, 60), x+w, top+158, Right, cBlack)
+		c.Text("reset", FitFace(Bold, 60, "reset", room), x+w, top+158, Right, cBlack)
 		c.Text("at "+v.dayClock(m.ResetsAt), Face(Regular, 32), x+w, top+202, Right, cDark)
 	case !m.ResetsAt.IsZero():
 		c.Text("resets in", Face(Regular, 32), x+w, top+90, Right, cDark)
-		c.Text(fmtDuration(m.ResetsAt.Sub(v.Now)), Face(Bold, 60), x+w, top+158, Right, cBlack)
+		left := fmtDuration(m.ResetsAt.Sub(v.Now))
+		c.Text(left, FitFace(Bold, 60, left, room), x+w, top+158, Right, cBlack)
 		c.Text("at "+v.dayClock(m.ResetsAt), Face(Regular, 32), x+w, top+202, Right, cDark)
 	case m.Detail != "":
-		c.Text(m.Detail, FitFace(Bold, 52, m.Detail, w/2), x+w, top+158, Right, cBlack)
+		// Same three lines as the reset time: "left" / "$0.05" / "of $20.00".
+		label, amount, of := detailLines(m.Detail)
+		if label != "" {
+			c.Text(label, Face(Regular, 32), x+w, top+90, Right, cDark)
+		}
+		c.Text(amount, FitFace(Bold, 60, amount, room), x+w, top+158, Right, cBlack)
+		if of != "" {
+			c.Text(of, FitFace(Regular, 32, of, room), x+w, top+202, Right, cDark)
+		}
 	}
 
 	// Usage bar, with a marker for how much of the window has elapsed.
@@ -312,6 +322,18 @@ func drawMeterPanel(c *Canvas, v *View, x, top, w int, m provider.Meter, extra s
 	}
 }
 
+// detailLines splits a meter's detail for the column beside the big number:
+// "$0.05 left of $20.00" → "left", "$0.05", "of $20.00"; "$2.50 of $10.00" → "used", ….
+func detailLines(d string) (label, amount, of string) {
+	if a, b, ok := strings.Cut(d, " left of "); ok {
+		return "left", a, "of " + b
+	}
+	if a, b, ok := strings.Cut(d, " of "); ok {
+		return "used", a, "of " + b
+	}
+	return "", d, ""
+}
+
 func joinDot(parts ...string) string {
 	var keep []string
 	for _, p := range parts {
@@ -327,6 +349,8 @@ func joinDot(parts ...string) string {
 // Callers handle windows whose reset time has already passed.
 func paceLines(v *View, m provider.Meter) (string, string) {
 	switch {
+	case m.Used >= 100 && m.ResetsAt.IsZero():
+		return "Limit reached", "" // credits and the like: nothing resets them
 	case m.Used >= 100:
 		return "Limit reached", "Resets " + v.dayClock(m.ResetsAt)
 	case m.Window <= 0 || m.ResetsAt.IsZero():
@@ -388,10 +412,11 @@ func evenPaceLines(v *View, m provider.Meter) (string, string) {
 }
 
 func drawChartTitle(c *Canvas, x, top, w int, title, sub string) {
-	c.Text(caps(title), Face(Medium, 30), x, top+30, Left, cMid)
+	room := w
 	if sub != "" {
-		c.Text(sub, Face(Regular, 28), x+w, top+30, Right, cDark)
+		room -= c.Text(sub, Face(Regular, 28), x+w, top+30, Right, cDark) + 24
 	}
+	c.Text(caps(title), FitFace(Medium, 30, caps(title), room), x, top+30, Left, cMid)
 }
 
 func drawEmpty(c *Canvas, x0, y0, x1, y1 int) {
@@ -491,13 +516,25 @@ func drawBars(c *Canvas, v *View, x, top, w, h int, title, sub string, days []hi
 	for _, d := range days {
 		scale = math.Max(scale, d.Value*1.12)
 	}
+	slot := float64(px1-px0) / float64(len(days))
+	bw := int(slot * 0.58)
 	if even > 0 {
 		ey := py1 - int(even/scale*plotH)
 		c.DashH(px0, px1, ey, 3, 14, 10, cMid)
-		c.Text(fmt.Sprintf("even pace %.0f%%", even), Face(Regular, 24), px1, ey-10, Right, cDark)
+		// The label sits on the line at the right, lifted above any bar (and its value)
+		// it would otherwise run into.
+		label := fmt.Sprintf("even pace %.0f%%", even)
+		f := Face(Regular, 24)
+		ly, lx := ey-10, px1-TextWidth(f, label)
+		for i, d := range days {
+			cx := px0 + int(slot*(float64(i)+0.5))
+			if cx+bw/2 < lx {
+				continue
+			}
+			ly = min(ly, py1-int(d.Value/scale*plotH)-12-28-10) // above the bar's value
+		}
+		c.Text(label, f, px1, ly, Right, cDark)
 	}
-	slot := float64(px1-px0) / float64(len(days))
-	bw := int(slot * 0.58)
 	for i, d := range days {
 		cx := px0 + int(slot*(float64(i)+0.5))
 		bh := int(d.Value / scale * plotH)
