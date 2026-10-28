@@ -49,7 +49,7 @@ Once connected:
 - **Swipe**, or use the arrows at the top, to switch between services.
 - **Hold** for 3 seconds to open the menu: connectors, rotate, refresh, or exit.
 
-If nothing changes for about 30 minutes, auto-refresh pauses until you tap the screen.
+To save battery, the Kindle sleeps between updates and the front light is off. While it sleeps, the screen says **press power to wake**. Pressing power lets you tap and swipe for 2 minutes before it sleeps again. If nothing changes for about 30 minutes, it stops updating until you press power.
 
 ## Configuration
 
@@ -70,6 +70,8 @@ Optional settings live in `ai-dashboard/config.json` on the Kindle:
 |---|---|
 | `refresh_minutes` | How often to fetch. |
 | `pause_after` | Pause after this many fetches in a row with no change (`0` = never). |
+| `sleep_between_updates` | Suspend the Kindle between updates (default `true`). |
+| `frontlight` | Front light level while running (default `0`, off; `-1` leaves it alone). |
 | `timezone` | Time zone for clock times, e.g. `Europe/London` (`make install` sets it to your Mac's). |
 | `full_refresh_every` | Flash the screen every N updates to clear e-ink ghosting (default `6`). |
 | `providers` | Per-service options, such as an OpenRouter budget or `"region": "cn"` for Z.ai. |

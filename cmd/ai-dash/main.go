@@ -46,18 +46,24 @@ type source struct {
 }
 
 type App struct {
-	cfg       Config
-	dir       string
-	display   *device.Display
-	touch     *device.Touch
-	all       []*source // every supported provider, in menu order
-	connected []*source // the ones shown, in the order they were connected
-	page      int
-	next      time.Time // zero while paused
-	idle      int       // fetch rounds in a row that brought nothing new
-	paused    bool
-	sleeping  bool      // the power button put the Kindle to sleep
-	powerAt   time.Time // last sleep or wake, to ignore the echoes of one button press
+	cfg        Config
+	dir        string
+	display    *device.Display
+	touch      *device.Touch
+	all        []*source // every supported provider, in menu order
+	connected  []*source // the ones shown, in the order they were connected
+	page       int
+	next       time.Time // zero while paused
+	idle       int       // fetch rounds in a row that brought nothing new
+	paused     bool
+	asleep     bool      // drawing the screen we leave up while suspended
+	sleepNow   bool      // the power button asked to sleep
+	noSuspend  bool      // suspending failed once; stay awake
+	awakeUntil time.Time // stay awake until then after a touch
+	powerAt    time.Time // last wake, to ignore the button press that caused it
+	powerd     <-chan device.PowerEvent
+	light      int // front light level
+	lightMax   int // 0 when there's no front light to control
 }
 
 func main() {
@@ -155,7 +161,12 @@ func (a *App) saveState() {
 	for _, src := range a.connected {
 		ids = append(ids, src.p.ID())
 	}
-	saveState(a.dir, State{Orientation: a.display.Orientation, Connectors: &ids})
+	st := State{Orientation: a.display.Orientation, Connectors: &ids}
+	if a.lightMax > 0 {
+		light := a.light
+		st.Frontlight = &light
+	}
+	saveState(a.dir, st)
 }
 
 func (a *App) current() *source {
@@ -168,7 +179,7 @@ func (a *App) current() *source {
 
 func (a *App) view(src *source) *render.View {
 	v := &render.View{Now: time.Now(), Loc: a.cfg.loc, Provider: "AI Dashboard", NextUpdate: a.next,
-		Battery: device.BatteryLevel(), Page: a.page, Pages: len(a.connected), Paused: a.paused, Sleeping: a.sleeping, Hist: &history.Store{}}
+		Battery: device.BatteryLevel(), Page: a.page, Pages: len(a.connected), Paused: a.paused, Asleep: a.asleep, Light: a.lightLabel(), Hist: &history.Store{}}
 	if src != nil {
 		v.Provider, v.Snap, v.Err, v.Hist = src.p.Name(), src.snap, src.err, src.hist
 	}
@@ -200,12 +211,22 @@ func (a *App) showPage(full bool) {
 func (a *App) run() error {
 	log.Printf("ai-dash %s starting", version)
 	a.touch = device.WatchTouch(a.cfg.Calibration, render.H, render.W) // portrait panel
-	powerd := device.WatchPowerd()
+	a.powerd = device.WatchPowerd()
+	a.initLight()
 	a.display.Show(render.Message(a.view(nil), "Starting AI dashboard…",
 		"Hold a finger on the screen for 3 seconds to open the menu.").Img, true)
+	a.touched()
+	fetch := true
 	for {
-		if len(a.connected) > 0 && !a.paused && !a.sleeping {
+		if fetch && len(a.connected) > 0 && !a.paused {
 			a.fetchAll()
+		}
+		fetch = false
+		if a.shouldSleep() {
+			if a.suspend() {
+				fetch = true // woken by the alarm to refresh, or by the power button: show fresh numbers
+				continue
+			}
 		}
 		a.showPage(false)
 
@@ -216,31 +237,26 @@ func (a *App) run() error {
 		for {
 			select {
 			case <-tick.C:
-				if len(a.connected) > 0 && !a.paused && !a.sleeping && !time.Now().Before(a.next) {
+				if len(a.connected) > 0 && !a.paused && !time.Now().Before(a.next) {
+					fetch = true
+					break wait
+				}
+				if a.shouldSleep() {
 					break wait
 				}
 			case <-a.touch.Power:
 				if time.Since(a.powerAt) < powerEcho {
-					continue
+					continue // the press that woke us up
 				}
-				if a.sleeping {
-					a.wake()
-					break wait
-				}
-				a.sleep(powerd, true)
-			case ev := <-powerd:
-				switch {
-				case ev == device.GoingToSleep && !a.sleeping:
-					a.sleep(powerd, false)
-				case ev == device.WokeUp && a.sleeping:
-					a.wake()
+				a.sleepNow = true
+				break wait
+			case ev := <-a.powerd:
+				if ev == device.GoingToScreenSaver { // powerd took the power button press itself
+					a.sleepNow = true
 					break wait
 				}
 			case g := <-a.touch.Tap:
-				if a.sleeping {
-					a.wake()
-					break wait
-				}
+				a.touched()
 				switch a.gesture(g) {
 				case navPrev:
 					a.page--
@@ -248,20 +264,24 @@ func (a *App) run() error {
 				case navNext:
 					a.page++
 					a.showPage(false)
+				case navLight:
+					a.cycleLight()
+					a.showPage(false)
 				case navTap:
 					a.resume()
-					break wait // refresh now
+					fetch = true
+					break wait
 				}
 			case <-a.touch.Hold:
-				if a.sleeping {
-					a.wake()
-				}
-				switch a.mainMenu() {
+				act := a.mainMenu()
+				a.touched()
+				switch act {
 				case actExit:
 					tick.Stop()
 					return a.bye()
 				case actRefresh, actChanged:
 					a.resume()
+					fetch = true
 					break wait
 				}
 				a.showPage(true)
@@ -271,38 +291,180 @@ func (a *App) run() error {
 	}
 }
 
-// powerEcho: one press of the power button can reach us twice (as a key press and as
-// powerd changing state), so a second signal this soon after the last one is ignored.
+// awakeWindow is how long the Kindle stays awake after you touch it or wake it with the
+// power button, before it goes back to sleep until the next update.
+const awakeWindow = 2 * time.Minute
+
+// powerEcho: the power button press that wakes the Kindle can reach us as a key press
+// shortly after resuming; don't take it as a request to sleep again.
 const powerEcho = 3 * time.Second
 
-// sleep shows the dashboard marked as sleeping, stops fetching and lets the Kindle
-// suspend. powerd normally reacts to the button itself; if it hasn't within a couple of
-// seconds (fromKey), we ask it to.
-func (a *App) sleep(powerd <-chan device.PowerEvent, fromKey bool) {
-	log.Printf("going to sleep")
-	a.sleeping, a.powerAt = true, time.Now()
-	a.showPage(true)
-	device.PreventScreenSaver(false)
-	if !fromKey {
-		return
+func (a *App) touched() { a.awakeUntil = time.Now().Add(awakeWindow) }
+
+func (a *App) shouldSleep() bool {
+	if a.noSuspend {
+		return false
 	}
-	select {
-	case <-powerd:
-	case <-time.After(2 * time.Second):
+	return a.sleepNow || (a.cfg.SleepBetweenUpdates && time.Now().After(a.awakeUntil))
+}
+
+// suspend draws the screen marked as asleep and has powerd put the Kindle to sleep until
+// the next update (or, when paused or with nothing connected, until the power button).
+// It returns false if the Kindle won't sleep, after which it stays awake.
+func (a *App) suspend() bool {
+	if device.PowerdState() == "" {
+		a.noSuspend = true // not a Kindle
+		return false
+	}
+	until := a.next
+	if a.paused || len(a.connected) == 0 {
+		until = time.Time{}
+	}
+	a.asleep, a.sleepNow = true, false
+	a.showPage(true)
+	time.Sleep(2 * time.Second) // let the e-ink update finish first
+	drainPower(a.powerd)
+	device.PreventScreenSaver(false)
+	if device.PowerdState() == "active" {
 		device.PressPowerButton()
+	}
+	log.Printf("sleeping until %v", until)
+
+	entered, byUser := false, false
+	refused := time.NewTimer(time.Minute)
+	defer refused.Stop()
+wait:
+	for {
+		select {
+		case <-refused.C:
+			if entered {
+				continue
+			}
+			log.Printf("powerd didn't put the Kindle to sleep (state %q); staying awake", device.PowerdState())
+			device.PreventScreenSaver(true)
+			a.asleep, a.noSuspend = false, true
+			return false
+		case ev := <-a.powerd:
+			switch ev {
+			case device.GoingToScreenSaver:
+				entered = true
+			case device.ReadyToSuspend:
+				entered = true
+				if !until.IsZero() {
+					device.SetRtcWakeup(time.Until(until))
+				}
+			case device.OutOfScreenSaver:
+				if entered {
+					byUser = true // power pressed before it got as far as suspending
+					break wait
+				}
+			case device.WakeupFromSuspend:
+				time.Sleep(3 * time.Second) // a button press moves powerd on to "active"
+				if device.PowerdState() == "active" {
+					byUser = true
+					break wait
+				}
+				if !until.IsZero() && !time.Now().Before(until.Add(-30*time.Second)) {
+					break wait // our alarm
+				}
+				// Woken for something else; powerd will suspend again and ask for the alarm.
+			}
+		}
+	}
+
+	if !byUser {
+		// Come fully out of the screensaver so the update isn't cut short by a re-suspend.
+		device.PressPowerButton()
+	}
+	device.PreventScreenSaver(true)
+	a.asleep, a.powerAt = false, time.Now()
+	if byUser {
+		log.Printf("woken up by hand")
+		a.touched()
+		a.resume()
+	} else {
+		log.Printf("woken up by the alarm")
+	}
+	if !device.WaitForWifi(45 * time.Second) {
+		log.Printf("Wi-Fi didn't reconnect")
+	}
+	drainPower(a.powerd)
+	drainKeys(a.touch.Power) // the press that woke us isn't a request to sleep again
+	return true
+}
+
+func drainPower(ch <-chan device.PowerEvent) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
 	}
 }
 
-// wake keeps the Kindle awake again and waits for Wi-Fi before the next fetch.
-func (a *App) wake() {
-	log.Printf("waking up")
-	a.sleeping, a.powerAt = false, time.Now()
-	device.PreventScreenSaver(true)
-	a.resume()
-	for i := 0; i < 10 && device.WifiIP() == ""; i++ {
-		device.WakeWifi()
-		time.Sleep(2 * time.Second)
+func drainKeys(ch chan struct{}) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
 	}
+}
+
+// Front light steps, as fractions of the brightest level: each tap on the header button
+// goes one step dimmer, and from off back to the brightest.
+var lightSteps = []float64{1, 0.66, 0.4, 0.2, 0.05, 0}
+
+// initLight applies the level picked last time (state.json), else config's frontlight
+// (-1 leaves the light as it is). start.sh puts the original level back on exit.
+func (a *App) initLight() {
+	a.lightMax = device.FrontlightMax()
+	if a.lightMax <= 0 {
+		return
+	}
+	level := a.cfg.Frontlight
+	if st := loadState(a.dir); st.Frontlight != nil {
+		level = *st.Frontlight
+	}
+	if level >= 0 {
+		a.setLight(level)
+	} else {
+		a.light = device.Frontlight()
+	}
+}
+
+func (a *App) setLight(level int) {
+	a.light = max(0, min(level, a.lightMax))
+	device.SetFrontlight(a.light)
+}
+
+func (a *App) cycleLight() {
+	next := a.lightMax
+	for _, f := range lightSteps {
+		v := int(math.Round(f * float64(a.lightMax)))
+		if f > 0 {
+			v = max(v, 1)
+		}
+		if v < a.light {
+			next = v
+			break
+		}
+	}
+	a.setLight(next)
+	a.saveState()
+	log.Printf("front light %d/%d", a.light, a.lightMax)
+}
+
+func (a *App) lightLabel() string {
+	switch {
+	case a.lightMax <= 0:
+		return ""
+	case a.light <= 0:
+		return "Off"
+	}
+	return fmt.Sprintf("%d%%", int(math.Round(float64(a.light)/float64(a.lightMax)*100)))
 }
 
 type nav int
@@ -311,6 +473,7 @@ const (
 	navTap nav = iota
 	navPrev
 	navNext
+	navLight
 )
 
 // gesture classifies a touch on the dashboard: a horizontal swipe or a tap on the header
@@ -318,6 +481,10 @@ const (
 func (a *App) gesture(g device.Gesture) nav {
 	if g.End.X < 0 {
 		return navTap
+	}
+	ex0, ey0 := device.ToLandscape(g.End, a.display.Orientation, render.W, render.H)
+	if image.Pt(ex0, ey0).In(render.BrightnessButton(a.view(a.current())).Inset(-16)) {
+		return navLight
 	}
 	sx, sy := device.ToLandscape(g.Start, a.display.Orientation, render.W, render.H)
 	ex, ey := device.ToLandscape(g.End, a.display.Orientation, render.W, render.H)

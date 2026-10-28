@@ -10,6 +10,8 @@
 #   - pillow (status bar & overlays) disabled, the statusbar job stopped
 #   - the window manager (awesome) SIGSTOPped so nothing gets redrawn over us
 #   - ai-dash grabs the touchscreen so taps don't reach the library underneath
+# To save battery the CPU runs in powersave mode and ai-dash turns the front light off
+# (both put back on exit) and suspends the Kindle between updates.
 # Exiting undoes all of that in a second or two. Fully stopping lab126_gui and starting it
 # again (what this script used to do) can leave FW 5.19 on a blank white screen.
 
@@ -40,8 +42,15 @@ fi
 # Let the library finish closing the scriptlet before we freeze the UI.
 sleep 1
 
-lipc-set-prop com.lab126.powerd preventScreenSaver 1
+lipc-set-prop com.lab126.powerd preventScreenSaver 1 # ai-dash suspends the Kindle itself
 lipc-set-prop com.lab126.cmd wirelessEnable 1
+
+FRONTLIGHT=$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)
+GOVERNOR=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+OLD_GOVERNOR=$(cat "$GOVERNOR" 2>/dev/null)
+if [ -n "$OLD_GOVERNOR" ] && grep -q powersave "${GOVERNOR%/*}/scaling_available_governors" 2>/dev/null; then
+    echo powersave >"$GOVERNOR"
+fi
 
 cat /dev/fb0 >"$FBDUMP" 2>/dev/null
 lipc-set-prop com.lab126.pillow disableEnablePillow disable
@@ -68,6 +77,8 @@ while :; do
 done
 
 echo "restoring the Kindle UI"
+[ -n "$FRONTLIGHT" ] && lipc-set-prop com.lab126.powerd flIntensity "$FRONTLIGHT"
+[ -n "$OLD_GOVERNOR" ] && echo "$OLD_GOVERNOR" >"$GOVERNOR"
 killall -CONT awesome
 [ "$STATUSBAR_STOPPED" = yes ] && start statusbar
 if [ -f "$FBDUMP" ]; then

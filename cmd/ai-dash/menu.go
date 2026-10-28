@@ -21,6 +21,7 @@ type State struct {
 	// Connectors shown on the dashboard, in order. nil means state.json predates
 	// connectors (see newApp); an empty list means none.
 	Connectors *[]string `json:"connectors,omitempty"`
+	Frontlight *int      `json:"frontlight,omitempty"` // picked with the header button
 }
 
 func statePath(dir string) string { return filepath.Join(dir, "state.json") }

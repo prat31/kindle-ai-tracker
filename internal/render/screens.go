@@ -33,8 +33,9 @@ type View struct {
 	Battery    int // -1 if unknown
 	Page       int // 0-based, when several providers take turns on screen
 	Pages      int
-	Paused     bool // auto-refresh stopped after a run of unchanged fetches
-	Sleeping   bool // the power button put the Kindle to sleep
+	Paused     bool   // auto-refresh stopped after a run of unchanged fetches
+	Asleep     bool   // this screen stays up while the Kindle is suspended
+	Light      string // front-light level for the header button, e.g. "66%" or "Off"; "" hides it
 }
 
 func (v *View) Clock(t time.Time) string { return t.In(v.Loc).Format("15:04") }
@@ -86,8 +87,11 @@ func Dashboard(v *View) *Canvas {
 	}
 	hint := "Tap: refresh   ·   Hold 3 s: menu   ·   Bar marker = time elapsed"
 	switch {
-	case v.Sleeping:
-		hint = "Tap or press power: wake"
+	case v.Asleep:
+		hint = "Updated " + v.Clock(v.Snap.Fetched)
+		if v.Err != "" {
+			hint = "Couldn't update · last data " + v.Clock(v.Snap.Fetched)
+		}
 	case v.Paused:
 		hint = "Tap: refresh and resume   ·   Hold 3 s: menu"
 	case v.Pages > 1:
@@ -120,40 +124,101 @@ var (
 	NavNext = image.Rect(W-margin-96, 40, W-margin, 116)
 )
 
-func drawHeader(c *Canvas, v *View) {
-	w := c.Text(v.Provider, Face(Bold, 60), margin, 100, Left, cBlack)
-	sub := "usage"
-	if v.Snap != nil && v.Snap.Plan != "" {
-		sub = v.Snap.Plan + " usage"
-	}
-	c.Text("  "+sub, Face(Regular, 40), margin+w, 100, Left, cDark)
-	right := W - margin
-	if v.Pages > 1 {
-		drawNavButton(c, NavPrev, false)
-		drawNavButton(c, NavNext, true)
-		right = NavPrev.Min.X - 28
-	}
-	chip := func(label string) {
-		f := Face(Bold, 32)
-		tw := TextWidth(f, label)
-		c.RoundRect(right-tw-40, 46, tw+40, 64, 14, cBlack)
-		c.Text(label, f, right-20, 90, Right, cWhite)
-	}
+// headerStatus is what the header shows at the right: a black chip for states that need
+// attention, otherwise when the numbers were fetched.
+func headerStatus(v *View) (label string, chip bool) {
 	switch {
-	case v.Sleeping:
-		chip("SLEEPING  ·  tap or press power to wake")
+	case v.Asleep:
+		return "ASLEEP  ·  press power to wake", true
 	case v.Err != "":
 		last := "never"
 		if v.Snap != nil {
 			last = v.Clock(v.Snap.Fetched)
 		}
-		chip("OFFLINE  ·  last data " + last)
+		return "OFFLINE  ·  last data " + last, true
 	case v.Snap != nil && v.Paused:
-		chip("PAUSED  ·  last update " + v.Clock(v.Snap.Fetched))
+		return "PAUSED  ·  last update " + v.Clock(v.Snap.Fetched), true
 	case v.Snap != nil:
-		c.Text("Updated "+v.Clock(v.Snap.Fetched), Face(Medium, 36), right, 92, Right, cBlack)
+		return "Updated " + v.Clock(v.Snap.Fetched), false
+	}
+	return "", false
+}
+
+// headerLayout places the right-hand side of the header, from the right: the page
+// arrows, the status, then the brightness button. It's shared with the app so taps
+// land on what's drawn.
+func headerLayout(v *View) (statusRight int, brightness image.Rectangle) {
+	statusRight = W - margin
+	if v.Pages > 1 && !v.Asleep { // taps don't reach us while asleep
+		statusRight = NavPrev.Min.X - 28
+	}
+	if v.Light == "" || v.Asleep {
+		return statusRight, image.Rectangle{}
+	}
+	left := statusRight
+	if label, chip := headerStatus(v); chip {
+		left -= TextWidth(Face(Bold, 32), label) + 40
+	} else if label != "" {
+		left -= TextWidth(Face(Medium, 36), label)
+	}
+	const bw = 150
+	return statusRight, image.Rect(left-28-bw, NavPrev.Min.Y, left-28, NavPrev.Max.Y)
+}
+
+// BrightnessButton is where the front-light button is on a screen with this view
+// (empty when it isn't shown).
+func BrightnessButton(v *View) image.Rectangle {
+	_, r := headerLayout(v)
+	return r
+}
+
+func drawHeader(c *Canvas, v *View) {
+	right, light := headerLayout(v)
+	leftmost := right
+	if !light.Empty() {
+		leftmost = light.Min.X
+	}
+	w := c.Text(v.Provider, FitFace(Bold, 60, v.Provider, leftmost-margin-40), margin, 100, Left, cBlack)
+	sub := "usage"
+	if v.Snap != nil && v.Snap.Plan != "" {
+		sub = v.Snap.Plan + " usage"
+	}
+	if f := Face(Regular, 40); margin+w+TextWidth(f, "  "+sub) < leftmost-24 {
+		c.Text("  "+sub, f, margin+w, 100, Left, cDark)
+	}
+	if v.Pages > 1 && !v.Asleep {
+		drawNavButton(c, NavPrev, false)
+		drawNavButton(c, NavNext, true)
+	}
+	if label, chip := headerStatus(v); chip {
+		f := Face(Bold, 32)
+		tw := TextWidth(f, label)
+		c.RoundRect(right-tw-40, 46, tw+40, 64, 14, cBlack)
+		c.Text(label, f, right-20, 90, Right, cWhite)
+	} else if label != "" {
+		c.Text(label, Face(Medium, 36), right, 92, Right, cBlack)
+	}
+	if !light.Empty() {
+		drawLightButton(c, light, v.Light)
 	}
 	c.Rect(margin, 130, W-2*margin, 4, cBlack)
+}
+
+// drawLightButton draws a sun (hollow when the light is off) and the current level.
+func drawLightButton(c *Canvas, r image.Rectangle, level string) {
+	c.RoundRect(r.Min.X, r.Min.Y, r.Dx(), r.Dy(), 16, cBlack)
+	c.RoundRect(r.Min.X+4, r.Min.Y+4, r.Dx()-8, r.Dy()-8, 12, cWhite)
+	cx, cy := r.Min.X+40, r.Min.Y+r.Dy()/2
+	c.RoundRect(cx-11, cy-11, 22, 22, 11, cBlack)
+	if level == "Off" {
+		c.RoundRect(cx-7, cy-7, 14, 14, 7, cWhite)
+	}
+	for i := 0; i < 8; i++ {
+		a := float64(i) * math.Pi / 4
+		c.Line(float64(cx)+16*math.Cos(a), float64(cy)+16*math.Sin(a),
+			float64(cx)+23*math.Cos(a), float64(cy)+23*math.Sin(a), 4, cBlack)
+	}
+	c.Text(level, FitFace(Bold, 30, level, r.Dx()-80), r.Max.X-16, cy+11, Right, cBlack)
 }
 
 // drawNavButton draws a rounded button with a solid triangle pointing left or right.
@@ -177,11 +242,12 @@ func drawFooter(c *Canvas, v *View, hint string) {
 	if v.Pages > 1 {
 		right = append(right, fmt.Sprintf("Page %d/%d", v.Page+1, v.Pages))
 	}
-	if v.Sleeping {
-		right = append(right, "Not updating while asleep")
-	} else if v.Paused {
+	switch {
+	case v.Paused && v.Asleep:
+		right = append(right, "No changes lately: asleep until you press power")
+	case v.Paused:
 		right = append(right, "No changes lately: auto-refresh paused")
-	} else if !v.NextUpdate.IsZero() {
+	case !v.NextUpdate.IsZero():
 		right = append(right, "Next update "+v.Clock(v.NextUpdate))
 	}
 	if v.Battery >= 0 {
@@ -484,7 +550,10 @@ func Message(v *View, title, sub string, hint ...string) *Canvas {
 		c.Text(line, f, W/2, H/2+60+i*46, Center, cDark)
 	}
 	h := "Hold 3 s: menu"
-	if len(hint) > 0 {
+	switch {
+	case v.Asleep:
+		h = "Press power to wake"
+	case len(hint) > 0:
 		h = hint[0]
 	}
 	drawFooter(c, v, h)

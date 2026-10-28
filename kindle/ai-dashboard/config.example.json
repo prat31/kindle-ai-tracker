@@ -2,6 +2,8 @@
   "orientation": "usb-right",
   "refresh_minutes": 5,
   "pause_after": 6,
+  "sleep_between_updates": true,
+  "frontlight": 0,
   "full_refresh_every": 6,
   "timezone": ""
 }

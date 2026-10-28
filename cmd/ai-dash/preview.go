@@ -31,7 +31,7 @@ func preview(cfg Config, out string) error {
 	now := time.Now()
 	hist, snap := fakeClaude(now, cfg.loc)
 	v := &render.View{Now: now, Loc: cfg.loc, Provider: "Claude", Snap: snap, Hist: hist,
-		NextUpdate: nextTick(now, cfg.RefreshMinutes), Battery: 82, Pages: 1}
+		NextUpdate: nextTick(now, cfg.RefreshMinutes), Battery: 82, Light: "66%", Pages: 1}
 
 	v.Pages, v.Page = 3, 0 // shows the header arrows
 
@@ -41,8 +41,12 @@ func preview(cfg Config, out string) error {
 	paused := *v
 	paused.Paused, paused.NextUpdate = true, time.Time{}
 
-	sleeping := *v
-	sleeping.Sleeping = true
+	asleep := *v
+	asleep.Asleep = true
+
+	lightOff := *v
+	lightOff.Light = "Off"
+	lightOff.Provider = "GitHub Copilot" // a long name, to check the header fits
 
 	// A window that ended with nothing used since (this used to show "-97%").
 	expired := *v
@@ -94,7 +98,8 @@ func preview(cfg Config, out string) error {
 		"dashboard":            render.Dashboard(v),
 		"dashboard-offline":    render.Dashboard(&offline),
 		"dashboard-paused":     render.Dashboard(&paused),
-		"dashboard-sleeping":   render.Dashboard(&sleeping),
+		"dashboard-asleep":     render.Dashboard(&asleep),
+		"dashboard-light-off":  render.Dashboard(&lightOff),
 		"dashboard-expired":    render.Dashboard(&expired),
 		"dashboard-copilot":    render.Dashboard(&copilot),
 		"dashboard-openrouter": render.Dashboard(&openrouter),

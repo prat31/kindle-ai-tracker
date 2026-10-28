@@ -18,7 +18,12 @@ type Config struct {
 	RefreshMinutes int    `json:"refresh_minutes"`
 	// Stop auto-refreshing after this many fetches in a row brought nothing new
 	// (no change, or an error); a tap resumes. 0 never pauses.
-	PauseAfter       int    `json:"pause_after"`
+	PauseAfter int `json:"pause_after"`
+	// Suspend the Kindle between updates (it wakes on an RTC alarm). Saves most of the
+	// battery; touches only work after pressing the power button.
+	SleepBetweenUpdates bool `json:"sleep_between_updates"`
+	// Front light level while the dashboard runs (0 = off, -1 = leave it as it is).
+	Frontlight       int    `json:"frontlight"`
 	FullRefreshEvery int    `json:"full_refresh_every"`
 	Timezone         string `json:"timezone"`
 	FBInk            string `json:"fbink"`
@@ -36,12 +41,14 @@ type Config struct {
 
 func defaultConfig() Config {
 	return Config{
-		Orientation:      "usb-right",
-		RefreshMinutes:   5,
-		PauseAfter:       6,
-		FullRefreshEvery: 6,
-		FBInk:            "/mnt/us/libkh/bin/fbink",
-		LoginPort:        8642,
+		Orientation:         "usb-right",
+		RefreshMinutes:      5,
+		PauseAfter:          6,
+		SleepBetweenUpdates: true,
+		Frontlight:          0,
+		FullRefreshEvery:    6,
+		FBInk:               "/mnt/us/libkh/bin/fbink",
+		LoginPort:           8642,
 	}
 }
 
