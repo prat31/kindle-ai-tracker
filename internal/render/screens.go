@@ -36,6 +36,7 @@ type View struct {
 	Paused     bool   // auto-refresh stopped after a run of unchanged fetches
 	Asleep     bool   // this screen stays up while the Kindle is suspended
 	Light      string // front-light level for the header button, e.g. "66%" or "Off"; "" hides it
+	Sleep      string // header snooze button: "on" sleeps when left alone, "off" (crossed out) stays awake; "" hides it
 }
 
 func (v *View) Clock(t time.Time) string { return t.In(v.Loc).Format("15:04") }
@@ -144,40 +145,52 @@ func headerStatus(v *View) (label string, chip bool) {
 	return "", false
 }
 
+type header struct {
+	statusRight  int
+	light, sleep image.Rectangle // empty when not shown
+	leftmost     int             // where the title has to stop
+}
+
 // headerLayout places the right-hand side of the header, from the right: the page
-// arrows, the status, then the brightness button. It's shared with the app so taps
-// land on what's drawn.
-func headerLayout(v *View) (statusRight int, brightness image.Rectangle) {
-	statusRight = W - margin
-	if v.Pages > 1 && !v.Asleep { // taps don't reach us while asleep
-		statusRight = NavPrev.Min.X - 28
+// arrows, the status, the brightness button, then the snooze button. It's shared with
+// the app so taps land on what's drawn. Taps don't reach us while asleep, so the
+// buttons are hidden then.
+func headerLayout(v *View) header {
+	h := header{statusRight: W - margin}
+	if v.Pages > 1 && !v.Asleep {
+		h.statusRight = NavPrev.Min.X - 28
 	}
-	if v.Light == "" || v.Asleep {
-		return statusRight, image.Rectangle{}
-	}
-	left := statusRight
+	left := h.statusRight
 	if label, chip := headerStatus(v); chip {
 		left -= TextWidth(Face(Bold, 32), label) + 40
 	} else if label != "" {
 		left -= TextWidth(Face(Medium, 36), label)
 	}
-	const bw = 150
-	return statusRight, image.Rect(left-28-bw, NavPrev.Min.Y, left-28, NavPrev.Max.Y)
+	h.leftmost = h.statusRight
+	if v.Asleep {
+		return h
+	}
+	if v.Light != "" {
+		h.light = image.Rect(left-28-150, NavPrev.Min.Y, left-28, NavPrev.Max.Y)
+		left, h.leftmost = h.light.Min.X, h.light.Min.X
+	}
+	if v.Sleep != "" {
+		h.sleep = image.Rect(left-20-NavPrev.Dx(), NavPrev.Min.Y, left-20, NavPrev.Max.Y)
+		h.leftmost = h.sleep.Min.X
+	}
+	return h
 }
 
 // BrightnessButton is where the front-light button is on a screen with this view
 // (empty when it isn't shown).
-func BrightnessButton(v *View) image.Rectangle {
-	_, r := headerLayout(v)
-	return r
-}
+func BrightnessButton(v *View) image.Rectangle { return headerLayout(v).light }
+
+// SleepButton is where the snooze button is (empty when it isn't shown).
+func SleepButton(v *View) image.Rectangle { return headerLayout(v).sleep }
 
 func drawHeader(c *Canvas, v *View) {
-	right, light := headerLayout(v)
-	leftmost := right
-	if !light.Empty() {
-		leftmost = light.Min.X
-	}
+	h := headerLayout(v)
+	right, leftmost := h.statusRight, h.leftmost
 	w := c.Text(v.Provider, FitFace(Bold, 60, v.Provider, leftmost-margin-40), margin, 100, Left, cBlack)
 	sub := "usage"
 	if v.Snap != nil && v.Snap.Plan != "" {
@@ -198,8 +211,11 @@ func drawHeader(c *Canvas, v *View) {
 	} else if label != "" {
 		c.Text(label, Face(Medium, 36), right, 92, Right, cBlack)
 	}
-	if !light.Empty() {
-		drawLightButton(c, light, v.Light)
+	if !h.light.Empty() {
+		drawLightButton(c, h.light, v.Light)
+	}
+	if !h.sleep.Empty() {
+		drawSleepButton(c, h.sleep, v.Sleep == "off")
 	}
 	c.Rect(margin, 130, W-2*margin, 4, cBlack)
 }
@@ -219,6 +235,21 @@ func drawLightButton(c *Canvas, r image.Rectangle, level string) {
 			float64(cx)+23*math.Cos(a), float64(cy)+23*math.Sin(a), 4, cBlack)
 	}
 	c.Text(level, FitFace(Bold, 30, level, r.Dx()-80), r.Max.X-16, cy+11, Right, cBlack)
+}
+
+// drawSleepButton draws a snooze "Zz", struck through when the Kindle is kept awake.
+func drawSleepButton(c *Canvas, r image.Rectangle, off bool) {
+	c.RoundRect(r.Min.X, r.Min.Y, r.Dx(), r.Dy(), 16, cBlack)
+	c.RoundRect(r.Min.X+4, r.Min.Y+4, r.Dx()-8, r.Dy()-8, 12, cWhite)
+	cx, cy := r.Min.X+r.Dx()/2, r.Min.Y+r.Dy()/2
+	c.Text("Z", Face(Bold, 38), cx-6, cy+12, Center, cBlack)
+	c.Text("z", Face(Bold, 26), cx+15, cy-4, Center, cBlack)
+	if off {
+		// a thin white gap either side keeps the slash readable over the letters
+		x0, y0, x1, y1 := float64(r.Min.X+18), float64(r.Min.Y+18), float64(r.Max.X-18), float64(r.Max.Y-18) // across the Z's own diagonal
+		c.Line(x0, y0, x1, y1, 10, cWhite)
+		c.Line(x0, y0, x1, y1, 4, cBlack)
+	}
 }
 
 // drawNavButton draws a rounded button with a solid triangle pointing left or right.

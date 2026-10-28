@@ -22,6 +22,7 @@ type State struct {
 	// connectors (see newApp); an empty list means none.
 	Connectors *[]string `json:"connectors,omitempty"`
 	Frontlight *int      `json:"frontlight,omitempty"` // picked with the header button
+	AutoSleep  *bool     `json:"auto_sleep,omitempty"` // the header snooze button
 }
 
 func statePath(dir string) string { return filepath.Join(dir, "state.json") }

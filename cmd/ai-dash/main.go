@@ -62,8 +62,9 @@ type App struct {
 	awakeUntil time.Time // stay awake until then after a touch
 	powerAt    time.Time // last wake, to ignore the button press that caused it
 	powerd     <-chan device.PowerEvent
-	light      int // front light level
-	lightMax   int // 0 when there's no front light to control
+	autoSleep  bool // sleep when left alone; toggled with the header snooze button
+	light      int  // front light level
+	lightMax   int  // 0 when there's no front light to control
 }
 
 func main() {
@@ -108,6 +109,10 @@ func newApp(cfg Config, dir string) (*App, error) {
 	st := loadState(dir)
 	if st.Orientation != "" {
 		a.display.Orientation = st.Orientation // set from the on-device menu
+	}
+	a.autoSleep = cfg.SleepBetweenUpdates
+	if st.AutoSleep != nil {
+		a.autoSleep = *st.AutoSleep // picked with the header button
 	}
 	for _, id := range provider.IDs() {
 		pdir := filepath.Join(dir, "data", id)
@@ -161,7 +166,8 @@ func (a *App) saveState() {
 	for _, src := range a.connected {
 		ids = append(ids, src.p.ID())
 	}
-	st := State{Orientation: a.display.Orientation, Connectors: &ids}
+	autoSleep := a.autoSleep
+	st := State{Orientation: a.display.Orientation, Connectors: &ids, AutoSleep: &autoSleep}
 	if a.lightMax > 0 {
 		light := a.light
 		st.Frontlight = &light
@@ -179,7 +185,10 @@ func (a *App) current() *source {
 
 func (a *App) view(src *source) *render.View {
 	v := &render.View{Now: time.Now(), Loc: a.cfg.loc, Provider: "AI Dashboard", NextUpdate: a.next,
-		Battery: device.BatteryLevel(), Page: a.page, Pages: len(a.connected), Paused: a.paused, Asleep: a.asleep, Light: a.lightLabel(), Hist: &history.Store{}}
+		Battery: device.BatteryLevel(), Page: a.page, Pages: len(a.connected), Paused: a.paused, Asleep: a.asleep, Light: a.lightLabel(), Sleep: "on", Hist: &history.Store{}}
+	if !a.autoSleep {
+		v.Sleep = "off"
+	}
 	if src != nil {
 		v.Provider, v.Snap, v.Err, v.Hist = src.p.Name(), src.snap, src.err, src.hist
 	}
@@ -274,6 +283,11 @@ func (a *App) run() error {
 				case navLight:
 					a.cycleLight()
 					a.showPage(false)
+				case navSleep:
+					a.autoSleep = !a.autoSleep
+					a.saveState()
+					log.Printf("sleep when left alone: %v", a.autoSleep)
+					a.showPage(false)
 				case navTap:
 					a.resume()
 					fetch = true
@@ -299,8 +313,9 @@ func (a *App) run() error {
 }
 
 // awakeWindow is how long the Kindle stays awake after you touch it or wake it with the
-// power button, before it goes back to sleep until the next update.
-const awakeWindow = 2 * time.Minute
+// power button, before it goes back to sleep until the next update (unless the header
+// snooze button is crossed out).
+const awakeWindow = 15 * time.Minute
 
 // powerEcho: the power button press that wakes the Kindle can reach us as a key press
 // shortly after resuming; don't take it as a request to sleep again.
@@ -312,7 +327,7 @@ func (a *App) shouldSleep() bool {
 	if a.noSuspend {
 		return false
 	}
-	return a.sleepNow || (a.cfg.SleepBetweenUpdates && time.Now().After(a.awakeUntil))
+	return a.sleepNow || (a.autoSleep && time.Now().After(a.awakeUntil))
 }
 
 // suspend draws the screen marked as asleep and has powerd put the Kindle to sleep until
@@ -481,6 +496,7 @@ const (
 	navPrev
 	navNext
 	navLight
+	navSleep
 )
 
 // gesture classifies a touch on the dashboard: a horizontal swipe or a tap on the header
@@ -492,6 +508,9 @@ func (a *App) gesture(g device.Gesture) nav {
 	ex0, ey0 := device.ToLandscape(g.End, a.display.Orientation, render.W, render.H)
 	if image.Pt(ex0, ey0).In(render.BrightnessButton(a.view(a.current())).Inset(-16)) {
 		return navLight
+	}
+	if image.Pt(ex0, ey0).In(render.SleepButton(a.view(a.current())).Inset(-10)) {
+		return navSleep
 	}
 	sx, sy := device.ToLandscape(g.Start, a.display.Orientation, render.W, render.H)
 	ex, ey := device.ToLandscape(g.End, a.display.Orientation, render.W, render.H)

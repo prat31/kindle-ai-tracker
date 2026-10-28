@@ -31,7 +31,7 @@ func preview(cfg Config, out string) error {
 	now := time.Now()
 	hist, snap := fakeClaude(now, cfg.loc)
 	v := &render.View{Now: now, Loc: cfg.loc, Provider: "Claude", Snap: snap, Hist: hist,
-		NextUpdate: nextTick(now, cfg.RefreshMinutes), Battery: 82, Light: "66%", Pages: 1}
+		NextUpdate: nextTick(now, cfg.RefreshMinutes), Battery: 82, Light: "66%", Sleep: "on", Pages: 1}
 
 	v.Pages, v.Page = 3, 0 // shows the header arrows
 
@@ -45,7 +45,7 @@ func preview(cfg Config, out string) error {
 	asleep.Asleep = true
 
 	lightOff := *v
-	lightOff.Light = "Off"
+	lightOff.Light, lightOff.Sleep = "Off", "off"
 	lightOff.Provider = "GitHub Copilot" // a long name, to check the header fits
 
 	// A window that ended with nothing used since (this used to show "-97%").
@@ -253,7 +253,7 @@ func connectorPages(base render.View, now time.Time, loc *time.Location) []rende
 }
 
 // writeGIF scales each landscape frame down by half, sets it in a drawing of a
-// Paperwhite lying on its side (USB-C edge on the right, so the wider bezel is there)
+// Paperwhite lying on its side (USB-C edge on the left, so the wider bezel is there)
 // and loops through them. Outside the Kindle is transparent.
 func writeGIF(path string, frames []*image.Gray, delay int) error {
 	pal := make(color.Palette, 17)
@@ -265,7 +265,7 @@ func writeGIF(path string, frames []*image.Gray, delay int) error {
 	anim := &gif.GIF{}
 
 	const (
-		bezel   = 38 // left, top and bottom
+		bezel   = 38 // right, top and bottom
 		chin    = 88 // the wider bezel on the USB side
 		radius  = 46 // corners of the body
 		bodyIdx = 2  // near-black body
@@ -288,7 +288,7 @@ func writeGIF(path string, frames []*image.Gray, delay int) error {
 		}
 		// a thin rim where the screen sits in the bezel
 		for y := bezel - 3; y < bezel+sh+3; y++ {
-			for x := bezel - 3; x < bezel+sw+3; x++ {
+			for x := chin - 3; x < chin+sw+3; x++ {
 				img.Pix[y*img.Stride+x] = edgeIdx
 			}
 		}
@@ -296,23 +296,23 @@ func writeGIF(path string, frames []*image.Gray, delay int) error {
 			for x := 0; x < sw; x++ {
 				sum := int(f.Pix[2*y*f.Stride+2*x]) + int(f.Pix[2*y*f.Stride+2*x+1]) +
 					int(f.Pix[(2*y+1)*f.Stride+2*x]) + int(f.Pix[(2*y+1)*f.Stride+2*x+1])
-				img.Pix[(y+bezel)*img.Stride+x+bezel] = uint8((sum/4 + 8) / 17)
+				img.Pix[(y+bezel)*img.Stride+x+chin] = uint8((sum/4 + 8) / 17)
 			}
 		}
-		// "kindle" along the wide bezel, reading bottom to top since the device lies on its side
+		// "kindle" along the wide bezel, reading top to bottom since the device lies on its side
 		logo := render.NewCanvas(200, 50)
 		logo.Rect(0, 0, 200, 50, 0x22)
 		logo.Text("kindle", render.Face(render.Medium, 34), 100, 36, render.Center, 0x99)
-		rot := device.Rotate(logo.Img, "usb-left")
-		ox, oy := bezel+sw+(chin-rot.Rect.Dx())/2, (h-rot.Rect.Dy())/2
+		rot := device.Rotate(logo.Img, "usb-right")
+		ox, oy := (chin-rot.Rect.Dx())/2, (h-rot.Rect.Dy())/2
 		for y := 0; y < rot.Rect.Dy(); y++ {
 			for x := 0; x < rot.Rect.Dx(); x++ {
 				img.Pix[(oy+y)*img.Stride+ox+x] = uint8((int(rot.Pix[y*rot.Stride+x]) + 8) / 17)
 			}
 		}
-		// USB-C port on the right edge
+		// USB-C port on the left edge
 		for y := h/2 - portLen/2; y < h/2+portLen/2; y++ {
-			for x := w - portW; x < w-1; x++ {
+			for x := 1; x < portW; x++ {
 				img.Pix[y*img.Stride+x] = portIdx
 			}
 		}
