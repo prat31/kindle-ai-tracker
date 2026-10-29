@@ -16,11 +16,12 @@ type Config struct {
 	// "usb-right" or "usb-left".
 	Orientation    string `json:"orientation"`
 	RefreshMinutes int    `json:"refresh_minutes"`
-	// Stop auto-refreshing after this many fetches in a row brought nothing new
-	// (no change, or an error); a tap resumes. 0 never pauses.
+	// Stop auto-refreshing, and sleep, after this many fetches in a row brought nothing
+	// new (no change, or an error); a tap or the power button resumes. 0 never pauses.
 	PauseAfter int `json:"pause_after"`
-	// Suspend the Kindle between updates (it wakes on an RTC alarm). Saves most of the
-	// battery; touches only work after pressing the power button.
+	// Put the Kindle to sleep once auto-refresh pauses (see PauseAfter). It then sleeps,
+	// without fetching, until the power button is pressed. When false (or the header
+	// snooze button is crossed out) it never pauses and keeps updating on schedule.
 	SleepBetweenUpdates bool `json:"sleep_between_updates"`
 	// Front light level while the dashboard runs (0 = off, -1 = leave it as it is).
 	Frontlight       int    `json:"frontlight"`

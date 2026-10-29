@@ -12,7 +12,7 @@ export COPYFILE_DISABLE=1 # no macOS ._ files in archives
 
 ID=ai_dashboard
 PLATFORM=kindlehf
-DESCRIPTION="Desk display for your AI plan usage: Claude, ChatGPT, GitHub Copilot, OpenRouter and Z.ai."
+DESCRIPTION="Desk display for your AI plan usage: Claude, ChatGPT, GitHub Copilot, OpenRouter, Z.ai and OpenCode Go."
 MAJOR=$(echo "$VERSION" | cut -d. -f1)
 MINOR=$(echo "$VERSION" | cut -d. -f2)
 PATCH=$(echo "$VERSION" | cut -d. -f3)

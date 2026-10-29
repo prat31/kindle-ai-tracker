@@ -108,6 +108,16 @@ func WakeWifi() {
 	exec.Command("lipc-set-prop", "com.lab126.cmd", "wirelessEnable", "1").Run()
 }
 
+// WifiConnected reports whether Wi-Fi is connected with an address (off the Kindle,
+// whether there's any network address).
+func WifiConnected() bool {
+	out, err := exec.Command("lipc-get-prop", "com.lab126.wifid", "cmState").Output()
+	if err != nil {
+		return WifiIP() != ""
+	}
+	return strings.TrimSpace(string(out)) == "CONNECTED" && WifiIP() != ""
+}
+
 // WifiIP returns the Kindle's address on wlan0 (or any non-loopback IPv4 elsewhere).
 func WifiIP() string {
 	ifaces, _ := net.Interfaces()

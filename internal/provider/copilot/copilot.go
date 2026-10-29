@@ -29,30 +29,31 @@ const (
 
 func init() { provider.Register("copilot", New) }
 
+// stored is the GitHub login. Refresh and Expires are only set when GitHub issued an
+// expiring token; otherwise the token lasts until it's revoked.
 type stored struct {
-	Token string `json:"token"`
+	Token   string    `json:"token"`
+	Refresh string    `json:"refresh_token,omitempty"`
+	Expires time.Time `json:"expires,omitempty"`
 }
 
 type Copilot struct {
 	dir        string
-	token      string
+	tok        stored
 	deviceCode string
 }
 
 func New(dir string, _ json.RawMessage) (provider.Provider, error) {
 	c := &Copilot{dir: dir}
-	var s stored
-	if provider.LoadJSON(c.path(), &s) {
-		c.token = s.Token
-	}
+	provider.LoadJSON(c.path(), &c.tok)
 	return c, nil
 }
 
 func (c *Copilot) ID() string     { return "copilot" }
 func (c *Copilot) Name() string   { return "GitHub Copilot" }
-func (c *Copilot) LoggedIn() bool { return c.token != "" }
+func (c *Copilot) LoggedIn() bool { return c.tok.Token != "" }
 func (c *Copilot) path() string   { return filepath.Join(c.dir, "tokens.json") }
-func (c *Copilot) Logout()        { c.token = ""; os.Remove(c.path()) }
+func (c *Copilot) Logout()        { c.tok = stored{}; os.Remove(c.path()) }
 func (c *Copilot) CompleteLogin(context.Context, string) error {
 	return errors.New("Copilot logs in with a device code, nothing to paste")
 }
@@ -95,11 +96,7 @@ func (c *Copilot) PollLogin(ctx context.Context) (bool, error) {
 	if c.deviceCode == "" {
 		return false, errors.New("login not started")
 	}
-	var r struct {
-		AccessToken string `json:"access_token"`
-		Error       string `json:"error"`
-		Description string `json:"error_description"`
-	}
+	var r tokenReply
 	err := postForm(ctx, tokenURL, url.Values{
 		"client_id":   {clientID},
 		"device_code": {c.deviceCode},
@@ -115,20 +112,77 @@ func (c *Copilot) PollLogin(ctx context.Context) (bool, error) {
 	case r.AccessToken == "":
 		return false, errors.New("unexpected token response")
 	}
-	c.token, c.deviceCode = r.AccessToken, ""
-	return true, provider.SaveJSON(c.path(), stored{Token: c.token})
+	c.deviceCode = ""
+	return true, c.save(r)
+}
+
+type tokenReply struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int64  `json:"expires_in"`
+	Error        string `json:"error"`
+	Description  string `json:"error_description"`
+}
+
+func (c *Copilot) save(r tokenReply) error {
+	c.tok = stored{Token: r.AccessToken, Refresh: r.RefreshToken}
+	if r.ExpiresIn > 0 {
+		c.tok.Expires = time.Now().Add(time.Duration(r.ExpiresIn) * time.Second)
+	}
+	return provider.SaveJSON(c.path(), c.tok)
+}
+
+// refresh trades the refresh token for a new access token. Without one (GitHub's usual
+// non-expiring token) a refused token can only be fixed by logging in again.
+func (c *Copilot) refresh(ctx context.Context) error {
+	if c.tok.Refresh == "" {
+		return provider.ErrReauth
+	}
+	var r tokenReply
+	err := postForm(ctx, tokenURL, url.Values{
+		"client_id":     {clientID},
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {c.tok.Refresh},
+	}, &r)
+	switch {
+	case provider.IsStatus(err, 400, 401, 403):
+		return fmt.Errorf("%w: %v", provider.ErrReauth, err)
+	case err != nil:
+		return err
+	case r.Error != "" || r.AccessToken == "": // GitHub reports a bad refresh token with 200
+		return fmt.Errorf("%w: refresh: %s %s", provider.ErrReauth, r.Error, r.Description)
+	}
+	return c.save(r)
+}
+
+func (c *Copilot) get(ctx context.Context) ([]byte, error) {
+	return provider.Do(ctx, "GET", usageURL, nil, map[string]string{
+		"Authorization":  "token " + c.tok.Token,
+		"Editor-Version": "kindle-ai-tracker/0.3",
+	})
 }
 
 func (c *Copilot) Fetch(ctx context.Context) (*provider.Snapshot, []byte, error) {
 	if !c.LoggedIn() {
 		return nil, nil, provider.ErrReauth
 	}
-	raw, err := provider.Do(ctx, "GET", usageURL, nil, map[string]string{
-		"Authorization":  "token " + c.token,
-		"Editor-Version": "kindle-ai-tracker/0.3",
-	})
+	if c.tok.Refresh != "" && !c.tok.Expires.IsZero() && time.Until(c.tok.Expires) < 5*time.Minute {
+		if err := c.refresh(ctx); err != nil {
+			return nil, nil, err
+		}
+	}
+	raw, err := c.get(ctx)
 	if provider.IsStatus(err, 401) {
-		return nil, raw, fmt.Errorf("%w: %v", provider.ErrReauth, err)
+		if rerr := c.refresh(ctx); rerr != nil {
+			if errors.Is(rerr, provider.ErrReauth) {
+				return nil, raw, fmt.Errorf("%w: %v", provider.ErrReauth, err)
+			}
+			return nil, raw, rerr
+		}
+		raw, err = c.get(ctx)
+		if provider.IsStatus(err, 401) { // refused even with a fresh token
+			return nil, raw, fmt.Errorf("%w: %v", provider.ErrReauth, err)
+		}
 	}
 	if err != nil {
 		return nil, raw, err
@@ -152,6 +206,7 @@ type quota struct {
 func Parse(raw []byte) (*provider.Snapshot, error) {
 	var p struct {
 		Plan      string           `json:"copilot_plan"`
+		SKU       string           `json:"access_type_sku"`
 		ResetDate string           `json:"quota_reset_date"`
 		Snapshots map[string]quota `json:"quota_snapshots"`
 	}
@@ -163,7 +218,7 @@ func Parse(raw []byte) (*provider.Snapshot, error) {
 	if !reset.IsZero() {
 		window = reset.Sub(reset.AddDate(0, -1, 0))
 	}
-	snap := &provider.Snapshot{Plan: provider.Capitalize(p.Plan)}
+	snap := &provider.Snapshot{Plan: planName(p.Plan, p.SKU)}
 	for _, k := range []struct{ key, title, short string }{
 		{"premium_interactions", "Premium requests · monthly", "Premium"},
 		{"chat", "Chat messages · monthly", "Chat"},
@@ -184,6 +239,20 @@ func Parse(raw []byte) (*provider.Snapshot, error) {
 		return nil, errors.New("no limited Copilot quotas on this account")
 	}
 	return snap, nil
+}
+
+// planName turns GitHub's internal plan ("individual", "individual_pro") into the name
+// GitHub shows (Pro, Pro+). Free accounts are "individual" too; their SKU tells them apart.
+func planName(plan, sku string) string {
+	switch {
+	case strings.Contains(sku, "free"):
+		return "Free"
+	case plan == "individual_pro" || strings.Contains(sku, "plus"):
+		return "Pro+"
+	case plan == "individual":
+		return "Pro"
+	}
+	return provider.Capitalize(strings.ReplaceAll(plan, "_", " "))
 }
 
 func parseDate(s string) time.Time {

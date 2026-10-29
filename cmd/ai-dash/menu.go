@@ -174,6 +174,7 @@ func (a *App) connectorsMenu() bool {
 func (a *App) disconnect(src *source) {
 	src.p.Logout()
 	src.snap, src.err = nil, ""
+	clearSnapshot(src.dir)
 	kept := a.connected[:0]
 	for _, c := range a.connected {
 		if c != src {

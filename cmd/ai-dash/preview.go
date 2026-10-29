@@ -38,11 +38,14 @@ func preview(cfg Config, out string) error {
 	offline := *v
 	offline.Err, offline.Hist = "No connection.", &history.Store{}
 
+	noWifi := offline
+	noWifi.NoWifi = true
+
 	paused := *v
 	paused.Paused, paused.NextUpdate = true, time.Time{}
 
 	asleep := *v
-	asleep.Asleep = true
+	asleep.Asleep, asleep.NextUpdate = true, time.Time{} // nothing is fetched while asleep
 
 	lightOff := *v
 	lightOff.Light, lightOff.Sleep = "Off", "off"
@@ -58,7 +61,7 @@ func preview(cfg Config, out string) error {
 	copilot := *v
 	copilot.Provider, copilot.Page = "GitHub Copilot", 1
 	reset := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
-	copilot.Snap = &provider.Snapshot{Plan: "Individual", Fetched: now, Meters: []provider.Meter{{
+	copilot.Snap = &provider.Snapshot{Plan: "Pro", Fetched: now, Meters: []provider.Meter{{
 		ID: "premium_interactions", Title: "Premium requests · monthly", Short: "Premium", Used: 76.3,
 		Window: reset.Sub(reset.AddDate(0, -1, 0)), ResetsAt: reset, Detail: "71 of 300 left"}}}
 
@@ -94,9 +97,10 @@ func preview(cfg Config, out string) error {
 		"menu":                 menu,
 		"connectors":           connectors,
 		"exit":                 bye,
-		"empty":                render.Message(empty, "No connectors yet", "Hold a finger on the screen for 3 seconds to open the menu, then choose Connectors to add Claude, ChatGPT, GitHub Copilot, OpenRouter or Z.ai."),
+		"empty":                render.Message(empty, "No connectors yet", "Hold a finger on the screen for 3 seconds to open the menu, then choose Connectors to add Claude, ChatGPT, GitHub Copilot, OpenRouter, Z.ai or OpenCode Go."),
 		"dashboard":            render.Dashboard(v),
 		"dashboard-offline":    render.Dashboard(&offline),
+		"dashboard-no-wifi":    render.Dashboard(&noWifi),
 		"dashboard-paused":     render.Dashboard(&paused),
 		"dashboard-asleep":     render.Dashboard(&asleep),
 		"dashboard-light-off":  render.Dashboard(&lightOff),
@@ -237,12 +241,18 @@ func connectorPages(base render.View, now time.Time, loc *time.Location) []rende
 		{ID: "weekly", Title: "Weekly limit · tokens", Short: "Weekly", Used: z.weekly, Window: week, ResetsAt: z.weeklyResets},
 		{ID: "mcp", Title: "MCP tool calls · monthly", Short: "MCP", Used: 12, Window: 30 * 24 * time.Hour, ResetsAt: now.Add(19 * 24 * time.Hour)}}}
 
+	ocHist, oc := fakeUsage(now, loc, 7, 0.08)
+	ocgo := &provider.Snapshot{Fetched: now, Meters: []provider.Meter{
+		{ID: "session", Title: "Current session · 5-hour limit", Short: "Session", Used: oc.session, Window: 5 * time.Hour, ResetsAt: oc.sessEnd},
+		{ID: "weekly", Title: "Weekly limit", Short: "Weekly", Used: oc.weekly, Window: week, ResetsAt: oc.weeklyResets},
+		{ID: "monthly", Title: "Monthly limit", Short: "Monthly", Used: 31, Window: 30 * 24 * time.Hour, ResetsAt: now.Add(12 * 24 * time.Hour)}}}
+
 	pages := []struct {
 		name string
 		snap *provider.Snapshot
 		hist *history.Store
 	}{{"Claude", claude, claudeHist}, {"ChatGPT", gpt, gptHist}, {"GitHub Copilot", copilot, copilotHist},
-		{"OpenRouter", openrouter, orHist}, {"Z.ai GLM", zai, zaiHist}}
+		{"OpenRouter", openrouter, orHist}, {"Z.ai GLM", zai, zaiHist}, {"OpenCode Go", ocgo, ocHist}}
 	views := make([]render.View, len(pages))
 	for i, pg := range pages {
 		v := base

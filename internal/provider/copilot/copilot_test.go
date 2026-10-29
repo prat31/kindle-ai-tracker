@@ -17,3 +17,18 @@ func TestParse(t *testing.T) {
 		t.Errorf("%+v", m)
 	}
 }
+
+func TestPlanName(t *testing.T) {
+	for _, c := range []struct{ plan, sku, want string }{
+		{"individual", "free_limited_copilot", "Free"},
+		{"individual", "monthly_subscriber_quota", "Pro"},
+		{"individual_pro", "", "Pro+"},
+		{"business", "", "Business"},
+		{"enterprise", "", "Enterprise"},
+		{"some_new_plan", "", "Some new plan"},
+	} {
+		if got := planName(c.plan, c.sku); got != c.want {
+			t.Errorf("%s/%s: got %q, want %q", c.plan, c.sku, got, c.want)
+		}
+	}
+}

@@ -182,6 +182,9 @@ func (c *Codex) Fetch(ctx context.Context) (*provider.Snapshot, []byte, error) {
 			return nil, raw, err
 		}
 		raw, err = c.get(ctx)
+		if provider.IsStatus(err, 401) { // refused even with a fresh token
+			return nil, raw, fmt.Errorf("%w: %v", provider.ErrReauth, err)
+		}
 	}
 	if err != nil {
 		return nil, raw, err

@@ -28,6 +28,7 @@ type View struct {
 	Provider   string             // header name, e.g. "Claude"
 	Snap       *provider.Snapshot // last successful reading, nil if none yet
 	Err        string             // set when the latest refresh failed
+	NoWifi     bool               // the Kindle isn't connected to Wi-Fi
 	Hist       *history.Store
 	NextUpdate time.Time
 	Battery    int // -1 if unknown
@@ -91,7 +92,7 @@ func Dashboard(v *View) *Canvas {
 	case v.Asleep:
 		hint = "Updated " + v.Clock(v.Snap.Fetched)
 		if v.Err != "" {
-			hint = "Couldn't update · last data " + v.Clock(v.Snap.Fetched)
+			hint = "Couldn't update · last data " + v.dayClock(v.Snap.Fetched)
 		}
 	case v.Paused:
 		hint = "Tap: refresh and resume   ·   Hold 3 s: menu"
@@ -131,12 +132,15 @@ func headerStatus(v *View) (label string, chip bool) {
 	switch {
 	case v.Asleep:
 		return "ASLEEP  ·  press power to wake", true
-	case v.Err != "":
-		last := "never"
-		if v.Snap != nil {
-			last = v.Clock(v.Snap.Fetched)
+	case v.NoWifi || v.Err != "":
+		state, last := "OFFLINE", "never"
+		if v.NoWifi {
+			state = "NO WI-FI"
 		}
-		return "OFFLINE  ·  last data " + last, true
+		if v.Snap != nil {
+			last = v.dayClock(v.Snap.Fetched)
+		}
+		return state + "  ·  last data " + last, true
 	case v.Snap != nil && v.Paused:
 		return "PAUSED  ·  last update " + v.Clock(v.Snap.Fetched), true
 	case v.Snap != nil:

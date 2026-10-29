@@ -15,6 +15,7 @@ See your usage, limits and resets at a glance. Updates every 5 minutes.
 - **GitHub Copilot**
 - **OpenRouter**
 - **Z.ai GLM** (Coding Plan)
+- **OpenCode Go**
 
 ## Requirements
 
@@ -48,8 +49,9 @@ Once connected:
 - **Tap** to refresh.
 - **Swipe**, or use the arrows at the top, to switch between services.
 - **Hold** for 3 seconds to open the menu: connectors, rotate, refresh, or exit.
+- **Offline**, it keeps showing the last readings it fetched, marked **OFFLINE** with when they were fetched.
 
-To save battery, the Kindle sleeps between updates. While it sleeps, the screen says **press power to wake**, and after you wake it, it stays awake for 15 minutes from your last touch. The **Zz** button at the top turns sleeping off (crossed out) and on again; the sun button next to it sets the front light. If nothing changes for about 30 minutes, it stops updating until you tap or press power.
+While awake, the dashboard updates every 5 minutes. To save battery, if nothing changes for 6 updates in a row (about 30 minutes, including time offline), it stops updating and the Kindle goes to sleep. It stays asleep, without updating, until you press the power button; the screen says **press power to wake**. Pressing power while it's awake puts it to sleep the same way. The **Zz** button at the top turns sleeping off (crossed out) and on again: with sleep off, it never sleeps by itself and keeps updating every 5 minutes, even when nothing changes. The sun button next to it sets the front light.
 
 ## Configuration
 
@@ -69,12 +71,12 @@ Optional settings live in `ai-dashboard/config.json` on the Kindle:
 | Key | Meaning |
 |---|---|
 | `refresh_minutes` | How often to fetch. |
-| `pause_after` | Pause after this many fetches in a row with no change (`0` = never). |
-| `sleep_between_updates` | Suspend the Kindle between updates (default `true`); the **Zz** button overrides it. |
+| `pause_after` | Stop updating and sleep after this many fetches in a row with no change (`0` = never). |
+| `sleep_between_updates` | Sleep once updates pause (default `true`); the **Zz** button overrides it. With sleep off, updates never pause. |
 | `frontlight` | Front light level while running (default `0`, off; `-1` leaves it alone); the sun button overrides it. |
 | `timezone` | Time zone for clock times, e.g. `Europe/London` (`make install` sets it to your Mac's). |
 | `full_refresh_every` | Flash the screen every N updates to clear e-ink ghosting (default `6`). |
-| `providers` | Per-service options, such as an OpenRouter budget or `"region": "cn"` for Z.ai. |
+| `providers` | Per-service options, such as an OpenRouter budget, `"region": "cn"` for Z.ai, or `"plan_label"` to override the plan name Claude shows. |
 
 ## Adding a service
 

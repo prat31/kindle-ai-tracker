@@ -1,4 +1,4 @@
-// Package claude reads Claude Pro/Max plan limits (5-hour session, weekly, per-model weekly).
+// Package claude reads Claude subscription limits (5-hour session, weekly, per-model weekly).
 //
 // It logs in with the same public OAuth client and copy-the-code flow Claude Code uses
 // for "Log in with Claude.ai", and reads the usage endpoint behind Claude Code's /usage
@@ -30,11 +30,13 @@ const (
 	tokenURL     = "https://platform.claude.com/v1/oauth/token"
 	redirectURL  = "https://platform.claude.com/oauth/code/callback"
 	usageURL     = "https://api.anthropic.com/api/oauth/usage"
+	profileURL   = "https://api.anthropic.com/api/oauth/profile"
 	betaHeader   = "oauth-2025-04-20"
 )
 
 func init() { provider.Register("claude", New) }
 
+// Options: plan_label overrides the plan read from the account, e.g. "Max".
 type Options struct {
 	PlanLabel string `json:"plan_label"`
 	Scopes    string `json:"scopes"`
@@ -45,10 +47,11 @@ type Claude struct {
 	dir    string
 	tokens *oauth.Tokens
 	login  *oauth.PKCE
+	plan   string // read from the profile once per run
 }
 
 func New(dir string, raw json.RawMessage) (provider.Provider, error) {
-	opts := Options{PlanLabel: "Pro", Scopes: "user:profile user:inference"}
+	opts := Options{Scopes: "user:profile user:inference"}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &opts); err != nil {
 			return nil, fmt.Errorf("claude options: %w", err)
@@ -65,7 +68,7 @@ func (c *Claude) LoggedIn() bool    { return c.tokens != nil && c.tokens.Refresh
 func (c *Claude) tokenPath() string { return filepath.Join(c.dir, "tokens.json") }
 
 func (c *Claude) Logout() {
-	c.tokens = nil
+	c.tokens, c.plan = nil, ""
 	os.Remove(c.tokenPath())
 }
 
@@ -109,7 +112,7 @@ func (c *Claude) CompleteLogin(ctx context.Context, input string) error {
 	if err != nil {
 		return err
 	}
-	c.tokens, c.login = t, nil
+	c.tokens, c.login, c.plan = t, nil, ""
 	return oauth.SaveTokens(c.tokenPath(), t)
 }
 
@@ -140,13 +143,16 @@ func (c *Claude) Fetch(ctx context.Context) (*provider.Snapshot, []byte, error) 
 			return nil, nil, err
 		}
 	}
-	raw, err := c.get(ctx)
+	raw, err := c.get(ctx, usageURL)
 	var he *provider.HTTPError
 	if errors.As(err, &he) && he.Status == 401 {
 		if err := c.refresh(ctx); err != nil {
 			return nil, raw, err
 		}
-		raw, err = c.get(ctx)
+		raw, err = c.get(ctx, usageURL)
+		if provider.IsStatus(err, 401) { // refused even with a fresh token
+			return nil, raw, fmt.Errorf("%w: %v", provider.ErrReauth, err)
+		}
 	}
 	if err != nil {
 		return nil, raw, err
@@ -156,12 +162,20 @@ func (c *Claude) Fetch(ctx context.Context) (*provider.Snapshot, []byte, error) 
 		return nil, raw, err
 	}
 	snap.Plan = c.opts.PlanLabel
+	if snap.Plan == "" {
+		if c.plan == "" { // the plan is only a label, so a failure here isn't fatal
+			if p, err := c.get(ctx, profileURL); err == nil {
+				c.plan = PlanName(p)
+			}
+		}
+		snap.Plan = c.plan
+	}
 	snap.Fetched = time.Now()
 	return snap, raw, nil
 }
 
-func (c *Claude) get(ctx context.Context) ([]byte, error) {
-	req, _ := http.NewRequestWithContext(ctx, "GET", usageURL, nil)
+func (c *Claude) get(ctx context.Context, u string) ([]byte, error) {
+	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
 	req.Header.Set("Authorization", "Bearer "+c.tokens.AccessToken)
 	req.Header.Set("anthropic-beta", betaHeader)
 	req.Header.Set("Content-Type", "application/json")
@@ -176,6 +190,40 @@ func (c *Claude) get(ctx context.Context) ([]byte, error) {
 		return raw, &provider.HTTPError{Status: resp.StatusCode, Body: string(raw)}
 	}
 	return raw, nil
+}
+
+// PlanName reads the subscription from the profile Claude Code shows in /status:
+// "Pro", "Max 5x", "Max 20x", "Team" or "Enterprise"; "" if it can't tell.
+func PlanName(raw []byte) string {
+	var p struct {
+		Account struct {
+			HasMax bool `json:"has_claude_max"`
+			HasPro bool `json:"has_claude_pro"`
+		} `json:"account"`
+		Organization struct {
+			Type string `json:"organization_type"`
+			Tier string `json:"rate_limit_tier"`
+		} `json:"organization"`
+	}
+	if json.Unmarshal(raw, &p) != nil {
+		return ""
+	}
+	typ, tier := p.Organization.Type, p.Organization.Tier
+	switch {
+	case strings.Contains(typ, "enterprise"):
+		return "Enterprise"
+	case strings.Contains(typ, "team"):
+		return "Team"
+	case strings.Contains(tier, "max_20x"):
+		return "Max 20x"
+	case strings.Contains(tier, "max_5x"):
+		return "Max 5x"
+	case strings.Contains(typ, "max") || p.Account.HasMax:
+		return "Max"
+	case strings.Contains(typ, "pro") || p.Account.HasPro:
+		return "Pro"
+	}
+	return ""
 }
 
 const (

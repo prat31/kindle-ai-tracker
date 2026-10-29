@@ -52,3 +52,20 @@ func TestParseCodeInput(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanName(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{"account":{"has_claude_pro":true},"organization":{"organization_type":"claude_pro","rate_limit_tier":"default_claude_pro"}}`:     "Pro",
+		`{"account":{"has_claude_max":true},"organization":{"organization_type":"claude_max","rate_limit_tier":"default_claude_max_5x"}}`:  "Max 5x",
+		`{"account":{"has_claude_max":true},"organization":{"organization_type":"claude_max","rate_limit_tier":"default_claude_max_20x"}}`: "Max 20x",
+		`{"account":{"has_claude_max":true},"organization":{}}`:                                                                            "Max",
+		`{"organization":{"organization_type":"claude_team","rate_limit_tier":"default_claude_max_5x"}}`:                                   "Team",
+		`{"organization":{"organization_type":"claude_enterprise"}}`:                                                                       "Enterprise",
+		`{"account":{},"organization":{}}`: "",
+		`not json`:                         "",
+	} {
+		if got := PlanName([]byte(raw)); got != want {
+			t.Errorf("%s: got %q, want %q", raw, got, want)
+		}
+	}
+}

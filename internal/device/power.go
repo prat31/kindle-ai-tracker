@@ -11,9 +11,8 @@ import (
 
 // Suspend on current firmware belongs to powerd: writing /sys/power/state directly is
 // refused (EBUSY). So we work the way KOReader does: "press" the power button through
-// powerd, set the wake alarm when it announces readyToSuspend (the only moment it
-// accepts one), and look at its state after wakeupFromSuspend to tell an alarm from
-// someone pressing the button.
+// powerd, and look at its state after wakeupFromSuspend to tell someone pressing the
+// button from powerd waking briefly for its own reasons.
 
 // PowerEvent is something powerd announced.
 type PowerEvent string
@@ -67,14 +66,6 @@ func PowerdState() string {
 // PressPowerButton makes powerd act as if the power button was pressed.
 func PressPowerButton() {
 	exec.Command("lipc-set-prop", "-i", "com.lab126.powerd", "powerButton", "1").Run()
-}
-
-// SetRtcWakeup schedules a wake-up; powerd only accepts it during readyToSuspend.
-func SetRtcWakeup(after time.Duration) {
-	secs := max(int64(after.Seconds()), 30)
-	if err := exec.Command("lipc-set-prop", "-i", "com.lab126.powerd", "rtcWakeup", strconv.FormatInt(secs, 10)).Run(); err != nil {
-		log.Printf("rtcWakeup: %v", err)
-	}
 }
 
 // PreventScreenSaver stops (or allows) powerd from putting the Kindle to sleep by itself.

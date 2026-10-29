@@ -11,7 +11,8 @@
 #   - the window manager (awesome) SIGSTOPped so nothing gets redrawn over us
 #   - ai-dash grabs the touchscreen so taps don't reach the library underneath
 # To save battery the CPU runs in powersave mode and ai-dash turns the front light off
-# (both put back on exit) and suspends the Kindle between updates.
+# (both put back on exit), and puts the Kindle to sleep once nothing has changed for a
+# while (until the power button is pressed).
 # Exiting undoes all of that in a second or two. Fully stopping lab126_gui and starting it
 # again (what this script used to do) can leave FW 5.19 on a blank white screen.
 
@@ -61,10 +62,13 @@ killall -STOP awesome
 cd "$DIR" || exit 1
 crashes=0
 while :; do
+    started=$(date +%s)
     "$CODE_DIR/ai-dash" -dir "$DIR" run
     rc=$?
     echo "ai-dash exited rc=$rc at $(date)"
     [ "$rc" -eq 0 ] && break
+    # Give up only on crashes in quick succession, not a few spread over weeks.
+    [ $(($(date +%s) - started)) -ge 600 ] && crashes=0
     crashes=$((crashes + 1))
     if [ "$crashes" -ge 5 ]; then
         /mnt/us/libkh/bin/fbink -q -c -f -m -y 20 "AI dashboard keeps crashing - see ai-dashboard/dash.log"
