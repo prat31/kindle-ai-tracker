@@ -11,8 +11,9 @@ import (
 
 // Suspend on current firmware belongs to powerd: writing /sys/power/state directly is
 // refused (EBUSY). So we work the way KOReader does: "press" the power button through
-// powerd, and look at its state after wakeupFromSuspend to tell someone pressing the
-// button from powerd waking briefly for its own reasons.
+// powerd, set the wake alarm when it announces readyToSuspend (the only moment it
+// accepts one), and look at its state after wakeupFromSuspend to tell an alarm or powerd
+// waking for its own reasons from someone pressing the button.
 
 // PowerEvent is something powerd announced.
 type PowerEvent string
@@ -25,8 +26,9 @@ const (
 )
 
 // WatchPowerd follows powerd's events with lipc-wait-event. Off the Kindle the
-// channel never fires.
-func WatchPowerd() <-chan PowerEvent {
+// channel never fires. onReady runs on every readyToSuspend as soon as it arrives, even
+// while the app is busy, so a wake alarm set there can't miss the suspend.
+func WatchPowerd(onReady func()) <-chan PowerEvent {
 	ch := make(chan PowerEvent, 16)
 	bin, err := exec.LookPath("lipc-wait-event")
 	if err != nil {
@@ -43,7 +45,15 @@ func WatchPowerd() <-chan PowerEvent {
 				for sc.Scan() {
 					name, _, _ := strings.Cut(strings.TrimSpace(sc.Text()), " ")
 					log.Printf("powerd: %s", sc.Text())
-					ch <- PowerEvent(name)
+					if PowerEvent(name) == ReadyToSuspend && onReady != nil {
+						onReady()
+					}
+					select {
+					case ch <- PowerEvent(name):
+					default: // nobody listening for a while; the newest events matter
+						<-ch
+						ch <- PowerEvent(name)
+					}
 				}
 				cmd.Wait()
 			}
@@ -66,6 +76,14 @@ func PowerdState() string {
 // PressPowerButton makes powerd act as if the power button was pressed.
 func PressPowerButton() {
 	exec.Command("lipc-set-prop", "-i", "com.lab126.powerd", "powerButton", "1").Run()
+}
+
+// SetRtcWakeup schedules a wake-up; powerd only accepts it during readyToSuspend.
+func SetRtcWakeup(after time.Duration) {
+	secs := max(int64(after.Seconds()), 30)
+	if err := exec.Command("lipc-set-prop", "-i", "com.lab126.powerd", "rtcWakeup", strconv.FormatInt(secs, 10)).Run(); err != nil {
+		log.Printf("rtcWakeup: %v", err)
+	}
 }
 
 // PreventScreenSaver stops (or allows) powerd from putting the Kindle to sleep by itself.

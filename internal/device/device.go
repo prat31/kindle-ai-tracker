@@ -92,7 +92,21 @@ func WritePNG(path string, img image.Image) error {
 	return os.Rename(tmp, path)
 }
 
+// BatteryLevel is the battery charge in percent, or -1 if unknown. It's read from sysfs
+// when the fuel gauge is there, which is far cheaper than starting lipc-get-prop for
+// every redraw.
 func BatteryLevel() int {
+	paths, _ := filepath.Glob("/sys/class/power_supply/*/capacity")
+	for _, p := range paths {
+		if t, _ := os.ReadFile(filepath.Join(filepath.Dir(p), "type")); strings.TrimSpace(string(t)) != "Battery" {
+			continue
+		}
+		if b, err := os.ReadFile(p); err == nil {
+			if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				return n
+			}
+		}
+	}
 	out, err := exec.Command("lipc-get-prop", "com.lab126.powerd", "battLevel").Output()
 	if err != nil {
 		return -1
@@ -108,14 +122,17 @@ func WakeWifi() {
 	exec.Command("lipc-set-prop", "com.lab126.cmd", "wirelessEnable", "1").Run()
 }
 
-// WifiConnected reports whether Wi-Fi is connected with an address (off the Kindle,
-// whether there's any network address).
+// WifiOff turns Wi-Fi off. Before sleeping it saves the radio's power, and the Kindle
+// suspends sooner: with Wi-Fi on, cmd holds the suspend back to take it down first.
+func WifiOff() {
+	exec.Command("lipc-set-prop", "com.lab126.cmd", "wirelessEnable", "0").Run()
+}
+
+// WifiConnected reports whether Wi-Fi has an address (off the Kindle, whether there's
+// any network address). It's checked every few seconds, so it looks at the interface
+// rather than starting lipc-get-prop each time.
 func WifiConnected() bool {
-	out, err := exec.Command("lipc-get-prop", "com.lab126.wifid", "cmState").Output()
-	if err != nil {
-		return WifiIP() != ""
-	}
-	return strings.TrimSpace(string(out)) == "CONNECTED" && WifiIP() != ""
+	return WifiIP() != ""
 }
 
 // WifiIP returns the Kindle's address on wlan0 (or any non-loopback IPv4 elsewhere).

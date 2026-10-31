@@ -11,9 +11,10 @@
 #   - the window manager (awesome) SIGSTOPped so nothing gets redrawn over us
 #   - ai-dash grabs the touchscreen so taps don't reach the library underneath
 # To save battery the CPU runs in powersave mode and ai-dash turns the front light off
-# (both put back on exit), and puts the Kindle to sleep once nothing has changed for a
-# while (until the power button is pressed).
-# Exiting undoes all of that in a second or two. Fully stopping lab126_gui and starting it
+# (both put back on exit), and puts the Kindle to sleep with Wi-Fi off whenever it isn't
+# being used, waking it with an alarm for each update (Wi-Fi is put back on exit too).
+# Exiting undoes all of that in a second or two, also when this script is killed (except
+# with SIGKILL), so the Kindle never stays unable to sleep by itself. Fully stopping lab126_gui and starting it
 # again (what this script used to do) can leave FW 5.19 on a blank white screen.
 
 CODE_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -41,8 +42,14 @@ fi
 # Let the library finish closing the scriptlet before we freeze the UI.
 sleep 1
 
+# What powerd offers, written once, to look for settings that save more battery.
+if [ ! -s "$DIR/powerd-props.txt" ] && command -v lipc-probe >/dev/null 2>&1; then
+    lipc-probe -v com.lab126.powerd >"$DIR/powerd-props.txt" 2>&1
+fi
+
 lipc-set-prop com.lab126.powerd preventScreenSaver 1 # ai-dash suspends the Kindle itself
-lipc-set-prop com.lab126.cmd wirelessEnable 1
+WIRELESS=$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)
+lipc-set-prop com.lab126.cmd wirelessEnable 1 # ai-dash turns it off while the Kindle sleeps
 
 FRONTLIGHT=$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)
 GOVERNOR=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
@@ -59,12 +66,46 @@ if [ -f /etc/upstart/statusbar.conf ] && stop statusbar; then
 fi
 killall -STOP awesome
 
+restore() {
+    echo "restoring the Kindle UI"
+    [ -n "$FRONTLIGHT" ] && lipc-set-prop com.lab126.powerd flIntensity "$FRONTLIGHT"
+    lipc-set-prop com.lab126.cmd wirelessEnable "${WIRELESS:-1}"
+    [ -n "$OLD_GOVERNOR" ] && echo "$OLD_GOVERNOR" >"$GOVERNOR"
+    killall -CONT awesome
+    [ "$STATUSBAR_STOPPED" = yes ] && start statusbar
+    if [ -f "$FBDUMP" ]; then
+        cat "$FBDUMP" >/dev/fb0
+        rm -f "$FBDUMP"
+    fi
+    lipc-set-prop com.lab126.pillow disableEnablePillow enable
+    lipc-set-prop com.lab126.appmgrd start app://com.lab126.booklet.home
+    lipc-set-prop com.lab126.powerd preventScreenSaver 0
+    rm -f "$PIDFILE"
+    echo "=== stopped $(date)"
+}
+
+CHILD=
+killed() {
+    echo "killed; stopping ai-dash"
+    if [ -n "$CHILD" ]; then
+        kill "$CHILD" 2>/dev/null
+        wait "$CHILD" 2>/dev/null
+    fi
+    restore
+    exit 1
+}
+trap killed TERM INT HUP
+
 cd "$DIR" || exit 1
 crashes=0
 while :; do
     started=$(date +%s)
-    "$CODE_DIR/ai-dash" -dir "$DIR" run
+    # In the background, so a signal reaches the trap without waiting for ai-dash to end.
+    "$CODE_DIR/ai-dash" -dir "$DIR" run &
+    CHILD=$!
+    wait "$CHILD"
     rc=$?
+    CHILD=
     echo "ai-dash exited rc=$rc at $(date)"
     [ "$rc" -eq 0 ] && break
     # Give up only on crashes in quick succession, not a few spread over weeks.
@@ -78,17 +119,4 @@ while :; do
     sleep 10
 done
 
-echo "restoring the Kindle UI"
-[ -n "$FRONTLIGHT" ] && lipc-set-prop com.lab126.powerd flIntensity "$FRONTLIGHT"
-[ -n "$OLD_GOVERNOR" ] && echo "$OLD_GOVERNOR" >"$GOVERNOR"
-killall -CONT awesome
-[ "$STATUSBAR_STOPPED" = yes ] && start statusbar
-if [ -f "$FBDUMP" ]; then
-    cat "$FBDUMP" >/dev/fb0
-    rm -f "$FBDUMP"
-fi
-lipc-set-prop com.lab126.pillow disableEnablePillow enable
-lipc-set-prop com.lab126.appmgrd start app://com.lab126.booklet.home
-lipc-set-prop com.lab126.powerd preventScreenSaver 0
-rm -f "$PIDFILE"
-echo "=== stopped $(date)"
+restore

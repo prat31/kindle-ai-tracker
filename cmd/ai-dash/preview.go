@@ -47,6 +47,9 @@ func preview(cfg Config, out string) error {
 	asleep := *v
 	asleep.Asleep, asleep.NextUpdate = true, time.Time{} // nothing is fetched while asleep
 
+	dozing := *v
+	dozing.Dozing = true
+
 	lightOff := *v
 	lightOff.Light, lightOff.Sleep = "Off", "off"
 	lightOff.Provider = "GitHub Copilot" // a long name, to check the header fits
@@ -103,6 +106,7 @@ func preview(cfg Config, out string) error {
 		"dashboard-no-wifi":    render.Dashboard(&noWifi),
 		"dashboard-paused":     render.Dashboard(&paused),
 		"dashboard-asleep":     render.Dashboard(&asleep),
+		"dashboard-dozing":     render.Dashboard(&dozing),
 		"dashboard-light-off":  render.Dashboard(&lightOff),
 		"dashboard-expired":    render.Dashboard(&expired),
 		"dashboard-copilot":    render.Dashboard(&copilot),

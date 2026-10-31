@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "golang.org/x/crypto/x509roots/fallback" // CA roots, in case the Kindle's store is old
@@ -39,11 +40,12 @@ var version = "dev"
 
 // source is one supported provider and what we know about it.
 type source struct {
-	p    provider.Provider
-	dir  string
-	hist *history.Store
-	snap *provider.Snapshot // last successful reading
-	err  string             // latest failure, cleared on success
+	p     provider.Provider
+	dir   string
+	hist  *history.Store
+	snap  *provider.Snapshot // last successful reading
+	err   string             // latest failure, cleared on success
+	tried time.Time          // last fetch attempt
 	// rejected counts updates in a row in which the service refused the login (after
 	// the provider tried refreshing it); at reauthAfter the login is dropped.
 	rejected int
@@ -57,10 +59,12 @@ type App struct {
 	all        []*source // every supported provider, in menu order
 	connected  []*source // the ones shown, in the order they were connected
 	page       int
-	next       time.Time // zero while paused
-	idle       int       // fetch rounds in a row that brought nothing new
+	next       time.Time    // zero while paused
+	alarm      atomic.Int64 // when to wake from suspend for the next update (Unix seconds, 0 = none)
+	idle       int          // fetch rounds in a row that brought nothing new
 	paused     bool
-	asleep     bool      // drawing the screen we leave up while suspended
+	asleep     bool      // drawing the screen we leave up while suspended until the power button
+	dozing     bool      // drawing the screen we leave up while suspended until the next update
 	sleepNow   bool      // the power button asked to sleep
 	noSuspend  bool      // not a Kindle: never suspend
 	retryAt    time.Time // powerd refused to suspend; don't sleep by ourselves before then
@@ -68,7 +72,7 @@ type App struct {
 	powerAt    time.Time // last wake, to ignore the button press that caused it
 	powerd     <-chan device.PowerEvent
 	noWifi     bool // as last checked; redrawn when it changes, so taps match the header
-	autoSleep  bool // sleep once auto-refresh pauses; toggled with the header snooze button
+	autoSleep  bool // pause auto-refresh, and sleep until the power button, once nothing changes; the header snooze button
 	light      int  // front light level
 	lightMax   int  // 0 when there's no front light to control
 }
@@ -192,7 +196,7 @@ func (a *App) current() *source {
 
 func (a *App) view(src *source) *render.View {
 	v := &render.View{Now: time.Now(), Loc: a.cfg.loc, Provider: "AI Dashboard", NextUpdate: a.next,
-		Battery: device.BatteryLevel(), Page: a.page, Pages: len(a.connected), Paused: a.paused, Asleep: a.asleep, NoWifi: a.noWifi, Light: a.lightLabel(), Sleep: "on", Hist: &history.Store{}}
+		Battery: device.BatteryLevel(), Page: a.page, Pages: len(a.connected), Paused: a.paused, Asleep: a.asleep, Dozing: a.dozing, NoWifi: a.noWifi, Light: a.lightLabel(), Sleep: "on", Hist: &history.Store{}}
 	if !a.autoSleep {
 		v.Sleep = "off"
 	}
@@ -227,8 +231,9 @@ func (a *App) showPage(full bool) {
 func (a *App) run() error {
 	log.Printf("ai-dash %s starting", version)
 	a.touch = device.WatchTouch(a.cfg.Calibration, render.H, render.W) // portrait panel
-	a.powerd = device.WatchPowerd()
+	a.powerd = device.WatchPowerd(a.setAlarm)
 	device.PreventScreenSaver(true) // a crash while asleep can leave it off; ai-dash decides when to sleep
+	device.WakeWifi()               // and Wi-Fi off
 	a.initLight()
 	a.checkWifi()
 	if src := a.current(); src != nil && src.snap != nil {
@@ -248,13 +253,13 @@ func (a *App) run() error {
 			pruned = time.Now().Round(0) // wall clock: the monotonic one stops while suspended
 		}
 		if fetch && len(a.connected) > 0 && !a.paused {
-			a.fetchAll()
+			a.fetchCurrent()
 		}
 		fetch = false
 		a.checkWifi()
-		if a.shouldSleep() {
-			if a.suspend() {
-				fetch = true // woken by the power button: show fresh numbers
+		if ok, until := a.shouldSleep(); ok {
+			if a.suspend(until) {
+				fetch = true // woken by the alarm, or by the power button: show fresh numbers
 				continue
 			}
 		}
@@ -274,7 +279,7 @@ func (a *App) run() error {
 					fetch = true
 					break wait
 				}
-				if a.shouldSleep() {
+				if ok, _ := a.shouldSleep(); ok {
 					break wait
 				}
 			case <-a.touch.Power:
@@ -290,20 +295,26 @@ func (a *App) run() error {
 				}
 			case g := <-a.touch.Tap:
 				a.touched()
-				switch a.gesture(g) {
-				case navPrev:
-					a.page--
-					a.showPage(false)
-				case navNext:
-					a.page++
-					a.showPage(false)
+				switch n := a.gesture(g); n {
+				case navPrev, navNext:
+					if n == navPrev {
+						a.page--
+					} else {
+						a.page++
+					}
+					a.showPage(false) // what we have, while it's fetched
+					if time.Since(a.current().tried) > switchRefetch {
+						a.resume()
+						fetch = true
+						break wait
+					}
 				case navLight:
 					a.cycleLight()
 					a.showPage(false)
 				case navSleep:
 					a.autoSleep = !a.autoSleep
 					a.saveState()
-					log.Printf("sleep when left alone: %v", a.autoSleep)
+					log.Printf("pause and sleep when nothing changes: %v", a.autoSleep)
 					a.resume() // with sleep off it never pauses; with it on, count unchanged updates afresh
 					a.showPage(false)
 				case navTap:
@@ -331,8 +342,8 @@ func (a *App) run() error {
 }
 
 // awakeWindow is how long the Kindle stays awake after you touch it or wake it with the
-// power button before it may go to sleep, once auto-refresh has paused.
-const awakeWindow = 15 * time.Minute
+// power button. After that it sleeps, waking only for updates.
+const awakeWindow = 5 * time.Minute
 
 // suspendRetry is how long to wait before trying to sleep again after powerd refused.
 const suspendRetry = 30 * time.Minute
@@ -355,42 +366,79 @@ func (a *App) checkWifi() bool {
 
 func (a *App) touched() { a.awakeUntil = time.Now().Add(awakeWindow) }
 
-// shouldSleep: the power button always puts the Kindle to sleep. By itself it only sleeps
-// (if the snooze button allows it) once auto-refresh has paused after cfg.PauseAfter
-// unchanged updates, or when nothing is connected, and not within awakeWindow of a touch.
-func (a *App) shouldSleep() bool {
+// shouldSleep says whether to suspend now, and until when: the next update, or (zero)
+// the power button once auto-refresh has paused or nothing is connected. The Kindle
+// sleeps whenever it isn't being used: right away when the power button is pressed,
+// otherwise awakeWindow after the last touch.
+func (a *App) shouldSleep() (bool, time.Time) {
 	now := time.Now()
 	switch {
 	case a.noSuspend:
-		return false
-	case a.sleepNow:
-		return true
-	case !a.autoSleep || now.Before(a.awakeUntil) || now.Before(a.retryAt):
-		return false
+		return false, time.Time{}
+	case !a.sleepNow && (now.Before(a.awakeUntil) || now.Before(a.retryAt)):
+		return false, time.Time{}
+	case a.paused || len(a.connected) == 0:
+		return true, time.Time{}
 	}
-	return a.paused || len(a.connected) == 0
+	return true, a.next
 }
 
-// suspend draws the screen marked as asleep and has powerd put the Kindle to sleep. No
-// wake-up alarm is set: nothing is fetched while it sleeps, and only the power button
-// wakes it. It returns false if the Kindle won't sleep; it then stays awake and only
-// tries again by itself after suspendRetry.
-func (a *App) suspend() bool {
-	if device.PowerdState() == "" {
+// schedule sets when the next update is due, and with it the wake alarm.
+func (a *App) schedule(t time.Time) {
+	a.next = t
+	if t.IsZero() {
+		a.alarm.Store(0)
+	} else {
+		a.alarm.Store(t.Unix())
+	}
+}
+
+// setAlarm runs on every readyToSuspend (from the powerd watcher): whenever powerd is
+// about to suspend, even in the middle of an update, it wakes up again for the next one.
+func (a *App) setAlarm() {
+	if at := a.alarm.Load(); at != 0 {
+		device.SetRtcWakeup(time.Until(time.Unix(at, 0)))
+	}
+}
+
+// suspend draws the screen marked as asleep and has powerd put the Kindle to sleep,
+// with Wi-Fi off, until the given update time (zero: until the power button). It returns
+// true once woken by the alarm or the power button, and false if the Kindle won't sleep;
+// it then stays awake and only tries again by itself after suspendRetry.
+//
+// Woken by the alarm, it leaves powerd in its screensaver state, where it suspends
+// again by itself a minute later; the update fits in that minute, so the Kindle never
+// comes fully awake for it.
+func (a *App) suspend(until time.Time) bool {
+	state := device.PowerdState()
+	if state == "" {
 		a.noSuspend = true // not a Kindle
 		return false
 	}
-	a.asleep, a.sleepNow, a.next = true, false, time.Time{}
-	a.showPage(true)
+	a.sleepNow = false
+	if until.IsZero() {
+		a.asleep = true
+		a.schedule(time.Time{})
+		a.showPage(true)
+		log.Printf("sleeping until the power button is pressed")
+	} else {
+		a.dozing = true
+		a.showPage(false)
+		log.Printf("sleeping until %s", until.In(a.cfg.loc).Format("15:04"))
+	}
 	time.Sleep(2 * time.Second) // let the e-ink update finish first
 	drainPower(a.powerd)
+	device.WifiOff()
 	device.PreventScreenSaver(false)
-	if device.PowerdState() == "active" {
+	entered := state != "active" // woken by the alarm: still in the screensaver
+	switch device.PowerdState() {
+	case "active":
 		device.PressPowerButton()
+	case "readyToSuspend":
+		a.setAlarm() // its announcement may have gone by while we were busy
 	}
-	log.Printf("sleeping until the power button is pressed")
 
-	entered := false
+	byUser := false
 	refused := time.NewTimer(time.Minute)
 	defer refused.Stop()
 wait:
@@ -402,7 +450,8 @@ wait:
 			}
 			log.Printf("powerd didn't put the Kindle to sleep (state %q); staying awake, trying again in %v", device.PowerdState(), suspendRetry)
 			device.PreventScreenSaver(true)
-			a.asleep, a.retryAt = false, time.Now().Add(suspendRetry).Round(0)
+			device.WakeWifi()
+			a.asleep, a.dozing, a.retryAt = false, false, time.Now().Add(suspendRetry).Round(0)
 			return false
 		case ev := <-a.powerd:
 			switch ev {
@@ -410,23 +459,34 @@ wait:
 				entered = true
 			case device.OutOfScreenSaver:
 				if entered {
-					break wait // power pressed before it got as far as suspending
+					byUser = true // power pressed before it got as far as suspending
+					break wait
 				}
 			case device.WakeupFromSuspend:
 				time.Sleep(3 * time.Second) // a button press moves powerd on to "active"
 				if device.PowerdState() == "active" {
+					byUser = true
 					break wait
 				}
-				// Woken for something of powerd's own; it suspends again by itself.
+				if !until.IsZero() && !time.Now().Before(until.Add(-30*time.Second)) {
+					break wait // our alarm
+				}
+				// Woken for something of powerd's own; it suspends again by itself, and
+				// setAlarm sets the alarm again.
 			}
 		}
 	}
 
-	device.PreventScreenSaver(true)
-	a.asleep, a.powerAt = false, time.Now()
-	log.Printf("woken up by hand")
-	a.touched()
-	a.resume()
+	a.asleep, a.dozing = false, false
+	if byUser {
+		device.PreventScreenSaver(true)
+		a.powerAt = time.Now()
+		log.Printf("woken up by hand")
+		a.touched()
+		a.resume()
+	} else {
+		log.Printf("woken up for the update")
+	}
 	if !device.WaitForWifi(45 * time.Second) {
 		log.Printf("Wi-Fi didn't reconnect")
 	}
@@ -554,15 +614,15 @@ func (a *App) gesture(g device.Gesture) nav {
 	return navTap
 }
 
-// fetchAll refreshes every connected provider and tracks whether anything changed.
-func (a *App) fetchAll() {
-	a.next = nextTick(time.Now(), a.cfg.RefreshMinutes)
+// fetchCurrent refreshes the connector on screen (the others are fetched when you switch
+// to them) and tracks whether anything changed.
+func (a *App) fetchCurrent() {
+	src := a.current()
+	a.schedule(a.nextUpdate(time.Now())) // in case powerd suspends mid-update
 	changed := false
-	for _, src := range a.connected {
-		if !src.p.LoggedIn() {
-			continue
-		}
-		c, err := a.update(src)
+	if src.p.LoggedIn() {
+		var err error
+		changed, err = a.update(src)
 		if errors.Is(err, provider.ErrReauth) {
 			src.rejected++
 			if src.rejected >= reauthAfter {
@@ -574,10 +634,42 @@ func (a *App) fetchAll() {
 				src.err = "The service refused the login; trying again."
 			}
 		}
-		changed = changed || c
 	}
 	a.trackIdle(changed)
+	if !a.paused {
+		a.schedule(a.nextUpdate(time.Now()))
+	}
 }
+
+// nextUpdate is when the update after now is due: on the next refreshMinutes boundary,
+// or when the quiet hours end if it falls in them.
+func (a *App) nextUpdate(now time.Time) time.Time {
+	t := nextTick(now, a.refreshMinutes())
+	if end, quiet := a.cfg.quietEnd(t); quiet {
+		return end
+	}
+	return t
+}
+
+// refreshMinutes is how long until the next update. With sleep turned off auto-refresh
+// never pauses; instead, after cfg.PauseAfter unchanged updates in a row the wait doubles
+// with each further one, up to cfg.MaxRefreshMinutes. Any change, tap or power button
+// press brings it back to cfg.RefreshMinutes.
+func (a *App) refreshMinutes() int {
+	m := a.cfg.RefreshMinutes
+	if a.cfg.PauseAfter <= 0 || a.idle < a.cfg.PauseAfter {
+		return m
+	}
+	for range a.idle - a.cfg.PauseAfter + 1 {
+		if m *= 2; m >= a.cfg.MaxRefreshMinutes {
+			return max(a.cfg.MaxRefreshMinutes, a.cfg.RefreshMinutes)
+		}
+	}
+	return m
+}
+
+// switchRefetch: switching to a connector fetches it, unless it was fetched this lately.
+const switchRefetch = time.Minute
 
 // reauthAfter is how many updates in a row a login must be refused before it's dropped,
 // so a passing 401 doesn't log you out. Providers with refresh tokens refresh first.
@@ -593,7 +685,8 @@ func (a *App) trackIdle(changed bool) {
 	}
 	a.idle++
 	if a.autoSleep && a.cfg.PauseAfter > 0 && a.idle >= a.cfg.PauseAfter {
-		a.paused, a.next = true, time.Time{}
+		a.paused = true
+		a.schedule(time.Time{})
 		log.Printf("no new data in %d fetches; auto-refresh paused until a tap or the power button", a.idle)
 	}
 }
@@ -621,6 +714,7 @@ func nextTick(now time.Time, minutes int) time.Time {
 func (a *App) update(src *source) (changed bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	src.tried = time.Now().Round(0) // wall clock: the monotonic one stops while suspended
 	snap, raw, err := src.p.Fetch(ctx)
 	if raw != nil {
 		os.WriteFile(filepath.Join(src.dir, "last_response.json"), raw, 0o644)
@@ -672,7 +766,7 @@ func (a *App) once() error {
 	if len(a.connected) == 0 {
 		return errors.New("no connectors; run login-cli <provider> first")
 	}
-	a.next = nextTick(time.Now(), a.cfg.RefreshMinutes)
+	a.schedule(a.nextUpdate(time.Now()))
 	for _, src := range a.connected {
 		if _, err := a.update(src); err != nil {
 			return err

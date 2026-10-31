@@ -6,7 +6,7 @@ Turn a jailbroken Kindle into a desk display for your AI plan usage.
 
 ![Dashboards for several AI services](docs/dashboards.gif)
 
-See your usage, limits and resets at a glance. Updates every 5 minutes.
+See your usage, limits and resets at a glance. Updates every 30 minutes.
 
 ## Supported services
 
@@ -51,7 +51,9 @@ Once connected:
 - **Hold** for 3 seconds to open the menu: connectors, rotate, refresh, or exit.
 - **Offline**, it keeps showing the last readings it fetched, marked **OFFLINE** with when they were fetched.
 
-While awake, the dashboard updates every 5 minutes. To save battery, if nothing changes for 6 updates in a row (about 30 minutes, including time offline), it stops updating and the Kindle goes to sleep. It stays asleep, without updating, until you press the power button; the screen says **press power to wake**. Pressing power while it's awake puts it to sleep the same way. The **Zz** button at the top turns sleeping off (crossed out) and on again: with sleep off, it never sleeps by itself and keeps updating every 5 minutes, even when nothing changes. The sun button next to it sets the front light.
+The dashboard updates the service on screen every 30 minutes, except overnight (23:00 to 07:00), and the others when you switch to them. To save battery, the Kindle sleeps with Wi-Fi off whenever you aren't using it, and wakes by itself only long enough to fetch each update. While it sleeps the touchscreen is off: press the power button to use it, and it stays awake for 5 minutes after your last touch. Pressing power while it's awake puts it back to sleep.
+
+If nothing changes for 6 updates in a row (about 3 hours, including time offline), it stops updating and sleeps until you press the power button; the screen says **press power to wake**. The **Zz** button at the top turns that off (crossed out) and on again: with it off, updates never stop, but while nothing changes they slow down, up to every 2 hours, and go back to every 30 minutes as soon as something changes or you touch the screen. The sun button next to it sets the front light.
 
 ## Configuration
 
@@ -59,7 +61,8 @@ Optional settings live in `ai-dashboard/config.json` on the Kindle:
 
 ```json
 {
-  "refresh_minutes": 5,
+  "refresh_minutes": 30,
+  "quiet_hours": "23:00-07:00",
   "pause_after": 6,
   "timezone": "Asia/Kolkata",
   "providers": [
@@ -70,9 +73,11 @@ Optional settings live in `ai-dashboard/config.json` on the Kindle:
 
 | Key | Meaning |
 |---|---|
-| `refresh_minutes` | How often to fetch. |
-| `pause_after` | Stop updating and sleep after this many fetches in a row with no change (`0` = never). |
-| `sleep_between_updates` | Sleep once updates pause (default `true`); the **Zz** button overrides it. With sleep off, updates never pause. |
+| `refresh_minutes` | How often to fetch the service on screen (default `30`). |
+| `quiet_hours` | No updates between these times (default `"23:00-07:00"`); the Kindle sleeps through them and updates when they end. `""` updates around the clock. |
+| `max_refresh_minutes` | With **Zz** off, the longest wait between updates while nothing changes (default `120`; set it to `refresh_minutes` to always update on time). |
+| `pause_after` | Stop updating and sleep after this many fetches in a row with no change (`0` = never). With **Zz** off, updates slow down after this many instead. |
+| `sleep_between_updates` | Sleep until the power button once updates pause (default `true`); the **Zz** button overrides it. With it off, updates never pause. Either way the Kindle sleeps between updates. |
 | `frontlight` | Front light level while running (default `0`, off; `-1` leaves it alone); the sun button overrides it. |
 | `timezone` | Time zone for clock times, e.g. `Europe/London` (`make install` sets it to your Mac's). |
 | `full_refresh_every` | Flash the screen every N updates to clear e-ink ghosting (default `6`). |

@@ -35,9 +35,10 @@ type View struct {
 	Page       int // 0-based, when several providers take turns on screen
 	Pages      int
 	Paused     bool   // auto-refresh stopped after a run of unchanged fetches
-	Asleep     bool   // this screen stays up while the Kindle is suspended
+	Asleep     bool   // this screen stays up while the Kindle is suspended until the power button
+	Dozing     bool   // this screen stays up while the Kindle is suspended until NextUpdate
 	Light      string // front-light level for the header button, e.g. "66%" or "Off"; "" hides it
-	Sleep      string // header snooze button: "on" sleeps when left alone, "off" (crossed out) stays awake; "" hides it
+	Sleep      string // header snooze button: "on" pauses and sleeps when nothing changes, "off" (crossed out) keeps updating; "" hides it
 }
 
 func (v *View) Clock(t time.Time) string { return t.In(v.Loc).Format("15:04") }
@@ -94,6 +95,8 @@ func Dashboard(v *View) *Canvas {
 		if v.Err != "" {
 			hint = "Couldn't update · last data " + v.dayClock(v.Snap.Fetched)
 		}
+	case v.Dozing:
+		hint = "Press power to use the touchscreen   ·   Bar marker = time elapsed"
 	case v.Paused:
 		hint = "Tap: refresh and resume   ·   Hold 3 s: menu"
 	case v.Pages > 1:
@@ -625,6 +628,8 @@ func Message(v *View, title, sub string, hint ...string) *Canvas {
 	switch {
 	case v.Asleep:
 		h = "Press power to wake"
+	case v.Dozing:
+		h = "Press power to use the touchscreen"
 	case len(hint) > 0:
 		h = hint[0]
 	}

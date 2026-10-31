@@ -1,6 +1,7 @@
 {
   "orientation": "usb-right",
-  "refresh_minutes": 5,
+  "refresh_minutes": 30,
+  "quiet_hours": "23:00-07:00",
   "pause_after": 6,
   "sleep_between_updates": true,
   "frontlight": 0,
